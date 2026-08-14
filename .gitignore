@@ -3,6 +3,7 @@
 
 # Keep the allowlist itself under version control.
 !.gitignore
+!README.md
 
 # TauriTavern extension entry files.
 !manifest.json
