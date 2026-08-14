@@ -59,6 +59,10 @@ TT-Toolkit 仅支持 TauriTavern，不兼容原版 SillyTavern。
 
 TT-Toolkit 目前处于 `0.x` 单用户开发验证阶段，功能和设置格式仍可能调整。
 
+## 致谢
+
+特别感谢 [Darkatse](https://github.com/Darkatse) 创建 TauriTavern，并为本插件提供运行基础与公开扩展接口。
+
 ## 许可证
 
 当前仓库未声明独立开源许可证。使用和分发前请确认仓库后续发布的许可说明。
