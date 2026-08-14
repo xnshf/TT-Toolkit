@@ -1,0 +1,11 @@
+{
+  "display_name": "TT-Toolkit",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "TT-Toolkit Contributors",
+  "version": "0.3.0",
+  "description": "TauriTavern-exclusive utility toolkit."
+}

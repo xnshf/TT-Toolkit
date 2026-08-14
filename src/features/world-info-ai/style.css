@@ -1,0 +1,14 @@
+.world-ai-toolbar,.world-ai-meta { display: flex; align-items: end; justify-content: space-between; gap: 10px; margin: 14px 0; }
+.world-ai-toolbar label { display: grid; flex: 1; gap: 5px; color: var(--ttk-muted); font-size: 12px; }
+.world-ai-toolbar select,.world-ai-entry select { padding: 8px 9px; border: 1px solid var(--ttk-border); border-radius: 7px; background: #11120f; color: var(--ttk-text); }
+.world-ai-meta { align-items: center; color: var(--ttk-muted); font-size: 12px; }
+.world-ai-meta input { width: min(300px,60%); }
+.world-ai-entries { display: grid; gap: 10px; margin: 12px 0; }
+.world-ai-entry { padding: 13px; border: 1px solid var(--ttk-border); border-radius: 10px; background: var(--ttk-panel); }
+.world-ai-entry-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.world-ai-entry-heading small { display: block; margin-top: 3px; color: var(--ttk-muted); }
+.world-ai-entry textarea { box-sizing: border-box; width: 100%; margin-top: 10px; padding: 9px; resize: vertical; border: 1px solid var(--ttk-border); border-radius: 7px; background: #11120f; color: var(--ttk-text); font: inherit; }
+.world-ai-active { display: grid; gap: 10px; margin: 4px 0 16px; }.world-ai-section-heading h3 { margin: 0; }.world-ai-section-heading p { margin: 4px 0 0; color: var(--ttk-muted); font-size: 13px; }
+.world-ai-active-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(230px,100%),1fr)); gap: 9px; }.world-ai-active-card { display: grid; gap: 7px; padding: 11px; border: 1px solid var(--ttk-border); border-radius: 9px; background: var(--ttk-panel); }.world-ai-active-card > div { display: flex; align-items: center; gap: 8px; min-width: 0; }.world-ai-active-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.world-ai-active-card small { color: var(--ttk-muted); }.world-ai-active-card.active { border-color: #6f9b67; }.world-ai-active-card.active small { color: #a9d3a2; }.world-ai-active-card.warning { border-color: #a77b35; }.world-ai-active-card.error { border-color: var(--ttk-danger); }
+.world-ai-source { flex: none; padding: 2px 6px; border-radius: 999px; background: #191a17; color: var(--ttk-muted); font-size: 11px; }
+@container ttk-content (max-width:560px) { .world-ai-toolbar,.world-ai-meta,.world-ai-entry-heading { align-items: stretch; flex-direction: column; }.world-ai-meta input { width: 100%; }.world-ai-entry select { width: 100%; } }

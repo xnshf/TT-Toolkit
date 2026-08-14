@@ -1,0 +1,14 @@
+# Ignore everything by default. Explicitly allow only the installable runtime.
+*
+
+# Keep the allowlist itself under version control.
+!.gitignore
+
+# TauriTavern extension entry files.
+!manifest.json
+!index.js
+!style.css
+
+# Runtime source loaded by the entry files.
+!src/
+!src/**

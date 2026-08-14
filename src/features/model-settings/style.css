@@ -1,0 +1,10 @@
+.model-presets { display: grid; gap: 12px; margin: 16px 0; }
+.model-preset-card { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 14px; border: 1px solid var(--ttk-border); border-radius: 11px; background: var(--ttk-panel); }
+.model-preset-heading { grid-column: 1/3; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.model-preset-heading label { display: flex; align-items: center; gap: 8px; }
+.model-preset-card>label { display: grid; gap: 5px; color: var(--ttk-muted); font-size: 12px; }
+.model-preset-card input:not([type=radio]) { width: 100%; color: var(--ttk-text); }
+.key-control { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; }
+.model-control { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 6px; }
+@container ttk-content (max-width:520px) { .model-control { grid-template-columns: minmax(0,1fr) auto; }.model-control input { grid-column: 1/-1; } }
+@container ttk-content (max-width:620px) { .model-preset-card { grid-template-columns: minmax(0,1fr); }.model-preset-heading { grid-column: 1; } }
