@@ -1,6 +1,6 @@
 # TT-Toolkit
 
-TT-Toolkit 是一个只面向 [TauriTavern](https://github.com/TauriTavern/TauriTavern) 的前端工具箱插件，用来集中处理聊天、世界书和模型服务相关的辅助功能。
+TT-Toolkit 是一个只面向 [TauriTavern](https://github.com/Darkatse/TauriTavern) 的前端工具箱插件，用来集中处理聊天、世界书和模型服务相关的辅助功能。
 
 当前版本：`0.3.0`
 
