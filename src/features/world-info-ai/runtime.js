@@ -1,10 +1,30 @@
-import { errorMessage, ToolkitError } from '../../kernel/errors.js';
+import { errorKind, errorMessage, ToolkitError } from '../../kernel/errors.js';
+import { LlmPresetStore } from '../../kernel/llm-presets.js';
 import { LlmTaskService } from '../../kernel/llm-tasks.js';
-import { detectPromptTemplateEntry, parseWorldInfoAiConfig, worldEntryKey } from './schema.js';
+import {
+    createDefaultWorldInfoAiFeatureSettings,
+    detectPromptTemplateEntry,
+    isAiModeEligible,
+    parseWorldInfoAiConfig,
+    parseWorldInfoAiFeatureSettings,
+    worldEntryKey,
+    worldInfoTriggerType,
+} from './schema.js';
+import {
+    chunkFillEntries,
+    collectFillEntries,
+    fillDescriptionPrompt,
+    fillDescriptionSchema,
+    FILL_RESPONSE_LENGTH,
+    FILL_SYSTEM_PROMPT,
+    FILL_TIMEOUT_MS,
+    parseFillResponse,
+} from './fill.js';
 import { activationJsonSchema, applyActivationDecision, parseActivationResponse } from './routing.js';
 import { WorldInfoAiConfigStore } from './storage.js';
 
 const MAX_TRANSCRIPT_CHARS = 30_000;
+const FEATURE_SETTINGS_KEY = 'world-info-ai-settings-v1';
 
 function messageRole(message) {
     if (message?.is_user)
@@ -12,6 +32,12 @@ function messageRole(message) {
     if (message?.is_system)
         return 'system';
     return 'assistant';
+}
+
+function expandAiDescription(host, description) {
+    if (typeof host?.macroProcess !== 'function')
+        return String(description ?? '');
+    return String(host.macroProcess(description) ?? description ?? '');
 }
 
 export function buildRoutingTranscript(messages, maxChars = MAX_TRANSCRIPT_CHARS) {
@@ -44,8 +70,19 @@ function routerPrompt(messages, candidates) {
 
 const SYSTEM_PROMPT = [
     '你是世界书语义路由器。根据 conversation 判断每个 candidate 的 description 是否适用于下一次回复。',
-    '只能选择输入中存在的 id。description 是唯一的条目语义来源；不得推测或索取世界书正文。',
-    '只返回符合 JSON schema 的对象。没有条目适用时返回 {"activate":[]}。',
+    '只能选择输入中存在的 id；description 是唯一的条目语义来源，不得推测或索取世界书正文。',
+    '',
+    '【输出格式（必须逐字遵循）】',
+    '输出一个 JSON 对象，只包含一个字段 "activate"，值为选中的 id 字符串数组。',
+    '格式：{"activate":["条目id","条目id"]}',
+    '没有条目适用时输出：{"activate":[]}',
+    '',
+    '【示例】',
+    'conversation 是用户问"外面下雨了要不要带伞"，候选包含 {"id":"world.2","description":"天气、下雨或降水相关情境时激活"}。',
+    '输出：{"activate":["world.2"]}',
+    '',
+    '【禁止】',
+    '不要使用代码块、Markdown 标记或任何解释文字，直接输出上面的 JSON 对象。',
 ].join('\n');
 
 export class WorldInfoAiRuntime {
@@ -53,7 +90,8 @@ export class WorldInfoAiRuntime {
         this.host = host;
         this.log = log;
         this.store = options.store ?? new WorldInfoAiConfigStore(host, log);
-        this.tasks = options.tasks ?? new LlmTaskService(host, options.taskLog ?? log);
+        this.presets = options.presets ?? new LlmPresetStore(host);
+        this.tasks = options.tasks ?? new LlmTaskService(host, options.taskLog ?? log, { presets: this.presets });
         this.mutable = {
             worldNames: [],
             activeWorlds: [],
@@ -62,6 +100,12 @@ export class WorldInfoAiRuntime {
             worldData: null,
             config: null,
             storageBackend: 'default',
+            presetId: null,
+            activePresetId: null,
+            presetOptions: [],
+            presetError: '',
+            fillBusy: false,
+            fillProgress: { done: 0, total: 0, uid: '' },
             busy: false,
             status: '尚未运行 AI 世界书判定。',
             warning: '',
@@ -74,6 +118,7 @@ export class WorldInfoAiRuntime {
         this.sequence = 0;
         this.pending = null;
         this.taskController = null;
+        this.fillController = null;
     }
 
     subscribe(listener) {
@@ -96,9 +141,13 @@ export class WorldInfoAiRuntime {
             this.host.onHostEvent('WORLDINFO_ENTRIES_LOADED', payload => this.applyPending(payload)),
             this.host.onHostEvent('GENERATION_ENDED', () => this.clearPending()),
             this.host.onHostEvent('GENERATION_STOPPED', () => this.clearPending()),
-            this.host.onHostEvent('CHAT_CHANGED', () => this.clearPending()),
+            this.host.onHostEvent('CHAT_CHANGED', () => {
+                this.clearPending();
+                this.cancelFill();
+            }),
         ];
         this.log?.info('activated');
+        await this.refreshFeatureSettings();
     }
 
     async deactivate() {
@@ -106,6 +155,7 @@ export class WorldInfoAiRuntime {
         this.sequence += 1;
         this.pending = null;
         this.cancelTask();
+        this.cancelFill();
         for (const dispose of this.disposers.splice(0))
             dispose();
         this.log?.info('deactivated');
@@ -128,10 +178,58 @@ export class WorldInfoAiRuntime {
         this.taskController = null;
     }
 
+    cancelFill() {
+        this.fillController?.abort();
+        this.fillController = null;
+    }
+
+    async refreshFeatureSettings() {
+        try {
+            const settings = parseWorldInfoAiFeatureSettings(await this.host.globalGet(FEATURE_SETTINGS_KEY));
+            const presets = await this.presets.load();
+            this.mutable.presetOptions = presets.presets.map(preset => ({ id: preset.id, name: preset.name, model: preset.model }));
+            this.mutable.activePresetId = presets.activePresetId;
+            let presetId = settings.presetId;
+            if (presetId !== null && !presets.presets.some(preset => preset.id === presetId))
+                presetId = null;
+            this.mutable.presetId = presetId;
+            this.mutable.presetError = '';
+        }
+        catch (error) {
+            this.mutable.presetError = errorMessage(error);
+            this.log?.error('preset.settings_load_failed', {
+                data: { operation: 'preset.settings.load', ...errorKind(error) },
+                sensitive: { error },
+            });
+        }
+        this.notify();
+    }
+
+    async selectPreset(presetId) {
+        const id = presetId === '' || presetId === null ? null : String(presetId);
+        try {
+            if (id !== null) {
+                const settings = await this.presets.load();
+                if (!settings.presets.some(preset => preset.id === id))
+                    throw new ToolkitError('LLM_PRESET_MISSING', '模型预设不存在或尚未保存。');
+            }
+            await this.host.globalSet(FEATURE_SETTINGS_KEY, { ...createDefaultWorldInfoAiFeatureSettings(), presetId: id });
+            this.mutable.presetId = id;
+            this.mutable.status = id
+                ? 'AI 激活与一键填充将使用所选模型预设。'
+                : 'AI 激活与一键填充将跟随设置页的当前预设。';
+            this.notify();
+        }
+        catch (error) {
+            this.log?.error('preset.select_failed', { data: { operation: 'preset.select', ...errorKind(error) }, sensitive: { error } });
+            throw error;
+        }
+    }
+
     warn(message, kind, sensitive = {}) {
+        this.log?.warn('routing.fallback', { data: { operation: 'routing.fallback', kind }, sensitive });
         this.mutable.warning = message;
         this.mutable.status = message;
-        this.log?.warn('routing.fallback', { data: { kind }, sensitive });
         this.notify();
     }
 
@@ -155,18 +253,22 @@ export class WorldInfoAiRuntime {
                     incompatible.push({ worldName, uid: entry?.uid, reasons: compatibility.reasons });
                     continue;
                 }
+                if (worldInfoTriggerType(entry) !== 'keyword') {
+                    incompatible.push({ worldName, uid: entry?.uid, reasons: ['非关键词触发'] });
+                    continue;
+                }
                 candidates.push({
                     id: worldEntryKey(worldName, entry?.uid),
                     worldName,
                     uid: entry?.uid,
-                    aiDescription: configured.aiDescription,
+                    aiDescription: expandAiDescription(this.host, configured.aiDescription),
                     order: Number(entry?.order ?? 0),
                     group: String(entry?.group ?? ''),
                 });
             }
         }
         if (incompatible.length) {
-            this.mutable.warning = `${incompatible.length} 个已配置 AI 条目包含 EJS 或 Prompt Template 专用语法，本轮按原生模式处理。`;
+            this.mutable.warning = `${incompatible.length} 个已配置 AI 条目无法参与 AI 判定（EJS/Prompt Template 或非关键词触发），本轮按原生模式处理。`;
             this.log?.warn('routing.ejs_forced_native', {
                 data: { entryCount: incompatible.length },
                 sensitive: { entries: incompatible },
@@ -193,6 +295,7 @@ export class WorldInfoAiRuntime {
             const ids = candidates.map(candidate => candidate.id);
             const output = await this.tasks.execute({
                 taskId: 'world-info.activation',
+                presetId: this.mutable.presetId ?? undefined,
                 systemPrompt: SYSTEM_PROMPT,
                 prompt: routerPrompt(snapshot.messages, candidates),
                 schema: activationJsonSchema(ids),
@@ -249,11 +352,77 @@ export class WorldInfoAiRuntime {
         }
     }
 
+    async fillDescriptions(uids) {
+        if (!this.mutable.worldData?.entries)
+            throw new ToolkitError('WORLD_INFO_NOT_SELECTED', '请先选择世界书。');
+        const entries = collectFillEntries(this.mutable.worldData.entries, uids);
+        if (!entries.length)
+            throw new ToolkitError('WORLD_INFO_NO_ELIGIBLE', '所选条目中没有可生成描述的关键词触发条目。');
+        this.cancelFill();
+        const controller = new AbortController();
+        this.fillController = controller;
+        const batches = chunkFillEntries(entries);
+        const descriptions = [];
+        const failures = [];
+        let processed = 0;
+        this.mutable.fillBusy = true;
+        this.mutable.fillProgress = { done: 0, total: entries.length, uid: '' };
+        this.log?.info('fill.started', { data: { entryCount: entries.length, batchCount: batches.length } });
+        this.notify();
+        try {
+            for (const batch of batches) {
+                if (controller.signal.aborted)
+                    throw new ToolkitError('LLM_TASK_CANCELLED', '描述生成已取消。');
+                this.mutable.fillProgress.uid = batch[0].uid;
+                this.notify();
+                const output = await this.tasks.execute({
+                    taskId: 'world-info.fill',
+                    presetId: this.mutable.presetId ?? undefined,
+                    systemPrompt: FILL_SYSTEM_PROMPT,
+                    prompt: fillDescriptionPrompt(batch),
+                    schema: fillDescriptionSchema(batch.map(entry => entry.uid)),
+                    responseLength: FILL_RESPONSE_LENGTH,
+                    timeoutMs: FILL_TIMEOUT_MS,
+                    signal: controller.signal,
+                });
+                const parsed = parseFillResponse(output, batch.map(entry => entry.uid));
+                for (const item of parsed.descriptions)
+                    descriptions.push(item);
+                for (const failure of parsed.failures)
+                    failures.push(failure);
+                processed += batch.length;
+                this.mutable.fillProgress.done = processed;
+                this.log?.info('fill.batch_completed', {
+                    data: { batchSize: batch.length, okCount: parsed.descriptions.length, failedCount: parsed.failures.length },
+                });
+                if (controller.signal.aborted)
+                    throw new ToolkitError('LLM_TASK_CANCELLED', '描述生成已取消。');
+                this.notify();
+            }
+            this.log?.info('fill.completed', { data: { okCount: descriptions.length, failedCount: failures.length } });
+            return { descriptions, failures };
+        }
+        catch (error) {
+            this.log?.warn('fill.failed', {
+                data: { operation: 'fill.generate', ...errorKind(error) },
+                sensitive: { error },
+            });
+            throw error;
+        }
+        finally {
+            this.mutable.fillBusy = false;
+            if (this.fillController === controller)
+                this.fillController = null;
+            this.notify();
+        }
+    }
+
     async refreshWorlds() {
         this.mutable.busy = true;
         this.mutable.error = '';
         this.notify();
         try {
+            await this.refreshFeatureSettings();
             this.mutable.worldNames = this.host.listWorldInfoNames();
             await this.refreshActiveWorlds();
             if (!this.mutable.worldNames.includes(this.mutable.selectedWorld))
@@ -266,11 +435,11 @@ export class WorldInfoAiRuntime {
             }
         }
         catch (error) {
-            this.mutable.error = errorMessage(error);
             this.log?.error('config.refresh_failed', {
-                data: { kind: error instanceof ToolkitError ? error.code : error instanceof Error ? error.name : typeof error },
+                data: { operation: 'config.refresh', ...errorKind(error) },
                 sensitive: { error },
             });
+            this.mutable.error = errorMessage(error);
         }
         finally {
             this.mutable.busy = false;
@@ -288,7 +457,7 @@ export class WorldInfoAiRuntime {
         catch (error) {
             this.mutable.activeWorldsError = errorMessage(error);
             this.log?.warn('active_worlds.resolve_failed', {
-                data: { kind: error instanceof ToolkitError ? error.code : error instanceof Error ? error.name : typeof error },
+                data: { operation: 'active_worlds.resolve', ...errorKind(error) },
                 sensitive: { error },
             });
             return;
@@ -302,7 +471,7 @@ export class WorldInfoAiRuntime {
                     if (loaded.config.entries[String(entry?.uid)]?.mode !== 'ai')
                         continue;
                     configuredAiEntries += 1;
-                    if (!detectPromptTemplateEntry(entry).detected)
+                    if (isAiModeEligible(entry))
                         eligibleAiEntries += 1;
                 }
                 return {
@@ -316,7 +485,7 @@ export class WorldInfoAiRuntime {
             }
             catch (error) {
                 this.log?.error('active_worlds.config_load_failed', {
-                    data: { kind: error instanceof ToolkitError ? error.code : error instanceof Error ? error.name : typeof error },
+                    data: { operation: 'active_worlds.config.load', ...errorKind(error) },
                     sensitive: { worldName: binding.name, error },
                 });
                 return {
@@ -332,6 +501,7 @@ export class WorldInfoAiRuntime {
     }
 
     async selectWorld(worldName) {
+        this.cancelFill();
         this.mutable.selectedWorld = String(worldName);
         try {
             const loaded = await this.store.load(this.mutable.selectedWorld);
@@ -343,7 +513,7 @@ export class WorldInfoAiRuntime {
         }
         catch (error) {
             this.log?.error('config.load_failed', {
-                data: { kind: error instanceof ToolkitError ? error.code : error instanceof Error ? error.name : typeof error },
+                data: { operation: 'config.load', ...errorKind(error) },
                 sensitive: { worldName: this.mutable.selectedWorld, error },
             });
             throw error;
@@ -371,6 +541,10 @@ export class WorldInfoAiRuntime {
                 : '世界书扩展字段无法安全往返，配置已自动保存到 TT-Toolkit 扩展存储。';
             this.mutable.error = '';
             await this.refreshActiveWorlds();
+        }
+        catch (error) {
+            this.log?.error('config.save_failed', { data: { operation: 'config.save', ...errorKind(error) }, sensitive: { error } });
+            throw error;
         }
         finally {
             this.mutable.busy = false;

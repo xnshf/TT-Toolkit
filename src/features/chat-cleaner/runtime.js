@@ -1,14 +1,9 @@
-import { ToolkitError, errorMessage } from '../../kernel/errors.js';
+import { ToolkitError, errorKind, errorMessage } from '../../kernel/errors.js';
 import { buildOperationPlan } from './plan.js';
 import { createDefaultProgress, createDefaultSettings, parseProgress, parseSettings } from './schema.js';
 import { commitOperation } from './transaction.js';
 const SETTINGS_KEY = 'chat-cleaner-settings-v1';
 const PROGRESS_NAMESPACE = 'tt-toolkit.chat-cleaner';
-function diagnosticError(error) {
-    return error instanceof ToolkitError
-        ? { kind: 'ToolkitError', code: error.code, message: error.message }
-        : { kind: error instanceof Error ? error.name : typeof error };
-}
 export class ChatCleanerRuntime {
     host;
     log;
@@ -50,10 +45,10 @@ export class ChatCleanerRuntime {
             this.log.debug('settings.loaded', { data: { assistantRules: this.mutable.settings.assistant.rules.length, userRules: this.mutable.settings.user.rules.length, autoEnabled: this.mutable.settings.auto.enabled } });
         }
         catch (error) {
+            this.log.error('settings.load_failed', { data: { operation: 'settings.load', ...errorKind(error) }, sensitive: { error } });
             this.mutable.settings = createDefaultSettings();
             this.mutable.error = errorMessage(error);
             this.mutable.status = `清洗配置读取失败，功能保持安全默认值并停止自动运行：${errorMessage(error)}`;
-            this.log.error('settings.load_failed', { data: diagnosticError(error), sensitive: { error } });
         }
         this.notify();
     }
@@ -72,26 +67,38 @@ export class ChatCleanerRuntime {
         this.notify();
     }
     async saveSettings(settings) {
-        const validated = parseSettings(settings);
-        await this.host.globalSet(SETTINGS_KEY, validated);
-        this.mutable.settings = validated;
-        this.mutable.currentPlan = null;
-        this.syncAutoSubscription();
-        this.log.info('settings.saved', {
-            data: { assistantRules: validated.assistant.rules.length, userRules: validated.user.rules.length, autoEnabled: validated.auto.enabled, deleteNativeReasoning: validated.deleteNativeReasoning },
-            sensitive: { settings: validated },
-        });
-        this.notify();
+        try {
+            const validated = parseSettings(settings);
+            await this.host.globalSet(SETTINGS_KEY, validated);
+            this.mutable.settings = validated;
+            this.mutable.currentPlan = null;
+            this.syncAutoSubscription();
+            this.log.info('settings.saved', {
+                data: { assistantRules: validated.assistant.rules.length, userRules: validated.user.rules.length, autoEnabled: validated.auto.enabled, deleteNativeReasoning: validated.deleteNativeReasoning },
+                sensitive: { settings: validated },
+            });
+            this.notify();
+        }
+        catch (error) {
+            this.log.error('settings.save_failed', { data: { operation: 'settings.save', ...errorKind(error) }, sensitive: { error } });
+            throw error;
+        }
     }
     async resetSettings() {
-        await this.host.globalDelete(SETTINGS_KEY);
-        this.mutable.settings = createDefaultSettings();
-        this.mutable.currentPlan = null;
-        this.mutable.error = '';
-        this.mutable.status = '聊天清洗设置已重置。';
-        this.log.warn('settings.reset');
-        this.syncAutoSubscription();
-        this.notify();
+        try {
+            await this.host.globalDelete(SETTINGS_KEY);
+            this.mutable.settings = createDefaultSettings();
+            this.mutable.currentPlan = null;
+            this.mutable.error = '';
+            this.mutable.status = '聊天清洗设置已重置。';
+            this.log.warn('settings.reset');
+            this.syncAutoSubscription();
+            this.notify();
+        }
+        catch (error) {
+            this.log.error('settings.reset_failed', { data: { operation: 'settings.reset', ...errorKind(error) }, sensitive: { error } });
+            throw error;
+        }
     }
     async loadProgress() {
         const identity = await this.host.identity();
@@ -105,14 +112,20 @@ export class ChatCleanerRuntime {
         return progress;
     }
     async resetProgress() {
-        const identity = await this.host.identity();
-        await this.host.chatExtensionSet(identity.stableId, PROGRESS_NAMESPACE, null);
-        this.mutable.progress = createDefaultProgress();
-        this.log.warn('progress.reset', { data: { chatAlias: this.host.chatAlias(identity.stableId) }, sensitive: { stableChatId: identity.stableId } });
-        this.notify();
+        try {
+            const identity = await this.host.identity();
+            await this.host.chatExtensionSet(identity.stableId, PROGRESS_NAMESPACE, null);
+            this.mutable.progress = createDefaultProgress();
+            this.log.warn('progress.reset', { data: { chatAlias: this.host.chatAlias(identity.stableId) }, sensitive: { stableChatId: identity.stableId } });
+            this.notify();
+        }
+        catch (error) {
+            this.log.error('progress.reset_failed', { data: { operation: 'progress.reset', ...errorKind(error) }, sensitive: { error } });
+            throw error;
+        }
     }
     async previewManual(keep) {
-        return this.runBusy(async () => {
+        return this.runBusy('cleaner.preview', async () => {
             const snapshot = await this.host.snapshot();
             const progress = await this.loadProgress();
             const plan = buildOperationPlan(snapshot, this.mutable.settings, { mode: 'manual', keep, progress });
@@ -123,7 +136,7 @@ export class ChatCleanerRuntime {
         });
     }
     async commitManual(allowEmpty) {
-        await this.runBusy(async () => {
+        await this.runBusy('cleaner.commit', async () => {
             const plan = this.mutable.currentPlan;
             if (!plan || plan.mode !== 'manual')
                 throw new ToolkitError('NO_PLAN', '没有可提交的手动清洗计划。');
@@ -192,15 +205,15 @@ export class ChatCleanerRuntime {
             this.log.info('auto.committed', { data: { chatAlias: this.host.chatAlias(plan.identity.stableId), messageIndex, ...plan.stats }, sensitive: { chatIdentity: plan.identity, changes: plan.changes } });
         }
         catch (error) {
+            this.log.error('auto.failed', { data: { operation: 'cleaner.auto', messageIndex, ...errorKind(error) }, sensitive: { error } });
             this.mutable.error = errorMessage(error);
             this.mutable.status = `自动清洗失败：${errorMessage(error)}`;
-            this.log.error('auto.failed', { data: { messageIndex, ...diagnosticError(error) }, sensitive: { error } });
         }
         finally {
             this.notify();
         }
     }
-    async runBusy(task) {
+    async runBusy(operation, task) {
         if (this.mutable.busy)
             throw new ToolkitError('BUSY', '聊天清洗正在执行其它操作。');
         this.mutable.busy = true;
@@ -210,8 +223,8 @@ export class ChatCleanerRuntime {
             return await task();
         }
         catch (error) {
+            this.log.error('operation.failed', { data: { operation, ...errorKind(error) }, sensitive: { error } });
             this.mutable.error = errorMessage(error);
-            this.log.error('operation.failed', { data: diagnosticError(error), sensitive: { error } });
             throw error;
         }
         finally {

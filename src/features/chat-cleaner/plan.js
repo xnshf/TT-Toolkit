@@ -53,7 +53,7 @@ function enabledRules(settings, role) {
     const group = settings[role];
     return group.enabled ? group.rules.filter(rule => rule.enabled) : [];
 }
-function cleanMessage(raw, messageIndex, role, settings, warnings) {
+function cleanMessage(raw, messageIndex, role, settings, warnings, context = {}) {
     if (!isRecord(raw))
         throw new ToolkitError('INVALID_MESSAGE', '目标楼层必须是对象', { messageIndex });
     const rules = enabledRules(settings, role);
@@ -68,15 +68,28 @@ function cleanMessage(raw, messageIndex, role, settings, warnings) {
     }
     const candidateTexts = [];
     if (hasSwipes) {
+        if (typeof raw.mes !== 'string')
+            throw new ToolkitError('INVALID_MESSAGE', '消息正文必须是字符串', { messageIndex });
+        const projectionMatchesSwipe = raw.mes === rawSwipes[currentSwipe];
+        const allowsGreetingProjection = messageIndex === 0 && context.chatKind === 'character';
+        if (!projectionMatchesSwipe && !allowsGreetingProjection) {
+            throw new ToolkitError('INVALID_MESSAGE', `楼层 ${messageIndex} 的 mes 与当前 swipe 正文不一致`, {
+                messageIndex,
+                swipeIndex: currentSwipe,
+            });
+        }
         for (let swipeIndex = 0; swipeIndex < rawSwipes.length; swipeIndex += 1) {
             const text = rawSwipes[swipeIndex];
             if (typeof text !== 'string')
                 throw new ToolkitError('INVALID_MESSAGE', 'swipes 中的正文必须是字符串', { messageIndex, swipeIndex });
-            candidateTexts.push({ swipeIndex, text, updateTopProjection: swipeIndex === currentSwipe });
+            candidateTexts.push({
+                swipeIndex,
+                text,
+                updateTopProjection: projectionMatchesSwipe && swipeIndex === currentSwipe,
+            });
         }
-        if (typeof raw.mes !== 'string' || raw.mes !== rawSwipes[currentSwipe]) {
-            throw new ToolkitError('INVALID_MESSAGE', 'mes 与当前 swipe 正文不一致', { messageIndex, swipeIndex: currentSwipe });
-        }
+        if (!projectionMatchesSwipe)
+            candidateTexts.push({ swipeIndex: null, text: raw.mes, updateTopProjection: true });
     }
     else {
         if (typeof raw.mes !== 'string')
@@ -195,7 +208,7 @@ export function buildOperationPlan(snapshot, settingsInput, options) {
         compactEligibleMessages: 0,
     };
     snapshot.messages.forEach((message, index) => {
-        const role = classifyMessage(message, index);
+        const role = classifyMessage(message, index, { chatKind: snapshot.identity.ref?.kind });
         rolesByIndex[index] = role;
         if (role === 'assistant')
             assistantIndexes.push(index);
@@ -263,7 +276,9 @@ export function buildOperationPlan(snapshot, settingsInput, options) {
     const stats = emptyStats(targetIndexes.length, classificationStats);
     for (const messageIndex of targetIndexes) {
         const role = rolesByIndex[messageIndex];
-        const change = cleanMessage(snapshot.messages[messageIndex], messageIndex, role, settings, warnings);
+        const change = cleanMessage(snapshot.messages[messageIndex], messageIndex, role, settings, warnings, {
+            chatKind: snapshot.identity.ref?.kind,
+        });
         if (!change)
             continue;
         changes.push(change);

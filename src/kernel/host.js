@@ -1,14 +1,21 @@
 import { ToolkitError } from './errors.js';
+import { sha256Hex } from './hash.js';
 const SCRIPT_URL = '/script.js';
 const CONTEXT_URL = '/scripts/st-context.js';
 const GROUP_URL = '/scripts/group-chats.js';
 const WORLD_INFO_URL = '/scripts/world-info.js';
+const OPENAI_URL = '/scripts/openai.js';
+const PROMPT_CONFLICT_CHAT_NAMESPACE = 'tt-toolkit.prompt-conflict';
+const PROMPT_CONFLICT_INVALIDATION_EVENTS = [
+    'SETTINGS_UPDATED', 'OAI_PRESET_CHANGED_AFTER',
+    'WORLDINFO_UPDATED', 'WORLDINFO_SETTINGS_UPDATED', 'CHAT_CHANGED',
+];
 function dynamicImport(url) {
     return import(url);
 }
 function requireAbi() {
     const abi = window.__TAURITAVERN__;
-    if (!abi?.api?.chat || !abi.api.extension?.store || !abi.api.layout || !abi.api.dev?.frontendLogs
+    if (!abi?.api?.chat || !abi.api.extension?.store || !abi.api.layout
         || typeof abi.invoke?.safeInvoke !== 'function') {
         throw new ToolkitError('HOST_ABI_MISSING', 'TauriTavern 必需 ABI 不可用，TT-Toolkit 已停止初始化。');
     }
@@ -118,7 +125,110 @@ export class TauriTavernHost {
         await this.abi.api.extension.store.deleteTable({ namespace: this.namespace, table });
     }
     async getHostConsoleCaptureEnabled() {
-        return this.abi.api.dev.frontendLogs.getConsoleCaptureEnabled();
+        const frontendLogs = this.assertFrontendLogsCapability();
+        let enabled;
+        try {
+            enabled = await frontendLogs.getConsoleCaptureEnabled();
+        }
+        catch {
+            throw new ToolkitError('HOST_FRONTEND_LOG_STATUS_INVALID', '读取宿主 console 捕获状态失败。');
+        }
+        if (typeof enabled !== 'boolean')
+            throw new ToolkitError('HOST_FRONTEND_LOG_STATUS_INVALID', '宿主 console 捕获状态必须是 boolean。');
+        return enabled;
+    }
+    assertFrontendLogsCapability() {
+        const frontendLogs = this.abi?.api?.dev?.frontendLogs;
+        const required = { list: 'list', subscribe: 'subscribe', getConsoleCaptureEnabled: 'getConsoleCaptureEnabled' };
+        const missing = Object.entries(required)
+            .filter(([, name]) => typeof frontendLogs?.[name] !== 'function')
+            .map(([, name]) => name);
+        if (missing.length)
+            throw new ToolkitError('HOST_FRONTEND_LOGS_MISSING', `TauriTavern 前端日志 ABI 缺少必需方法：${missing.join('、')}。`);
+        return frontendLogs;
+    }
+    validateFrontendLogEntry(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value))
+            throw new ToolkitError('HOST_FRONTEND_LOG_ENTRY_INVALID', '宿主前端日志条目必须是对象。');
+        const candidate = value;
+        if (!Number.isSafeInteger(candidate.id) || candidate.id <= 0)
+            throw new ToolkitError('HOST_FRONTEND_LOG_ENTRY_INVALID', '宿主前端日志 id 必须是大于零的安全整数。');
+        if (!Number.isSafeInteger(candidate.timestampMs) || candidate.timestampMs < 0)
+            throw new ToolkitError('HOST_FRONTEND_LOG_ENTRY_INVALID', '宿主前端日志时间戳必须是大于等于零的安全整数。');
+        if (!['debug', 'info', 'warn', 'error'].includes(candidate.level))
+            throw new ToolkitError('HOST_FRONTEND_LOG_ENTRY_INVALID', '宿主前端日志级别非法。');
+        if (typeof candidate.message !== 'string')
+            throw new ToolkitError('HOST_FRONTEND_LOG_ENTRY_INVALID', '宿主前端日志 message 必须是字符串。');
+        if (candidate.target !== undefined && typeof candidate.target !== 'string')
+            throw new ToolkitError('HOST_FRONTEND_LOG_ENTRY_INVALID', '宿主前端日志 target 必须是字符串。');
+        return {
+            id: candidate.id,
+            timestampMs: candidate.timestampMs,
+            level: candidate.level,
+            message: candidate.message,
+            ...(candidate.target !== undefined ? { target: candidate.target } : {}),
+        };
+    }
+    async listFrontendLogs() {
+        const frontendLogs = this.assertFrontendLogsCapability();
+        let value;
+        try {
+            value = await frontendLogs.list();
+        }
+        catch {
+            throw new ToolkitError('HOST_FRONTEND_LOG_LIST_INVALID', '读取宿主前端日志尾部失败。');
+        }
+        if (!Array.isArray(value))
+            throw new ToolkitError('HOST_FRONTEND_LOG_LIST_INVALID', '宿主前端日志尾部必须是数组。');
+        return value.map(entry => this.validateFrontendLogEntry(entry));
+    }
+    subscribeFrontendLogs(onEntry, onContractError) {
+        if (typeof onEntry !== 'function' || typeof onContractError !== 'function')
+            throw new TypeError('宿主前端日志订阅需要 onEntry 与 onContractError 回调');
+        const frontendLogs = this.assertFrontendLogsCapability();
+        let pendingCancel = false;
+        let underlying = null;
+        let cancelCalled = false;
+        let notified = false;
+        let stopped = false;
+        const cancel = () => {
+            if (cancelCalled)
+                return;
+            cancelCalled = true;
+            if (underlying)
+                underlying();
+            else
+                pendingCancel = true;
+        };
+        const wrapped = entry => {
+            if (cancelCalled || stopped)
+                return;
+            let validated;
+            try {
+                validated = this.validateFrontendLogEntry(entry);
+            }
+            catch (error) {
+                if (!notified) {
+                    notified = true;
+                    stopped = true;
+                    onContractError(error);
+                }
+                return;
+            }
+            if (pendingCancel)
+                return;
+            onEntry(validated);
+        };
+        return frontendLogs.subscribe(wrapped).then(unsubscribe => {
+            if (typeof unsubscribe !== 'function')
+                throw new ToolkitError('HOST_FRONTEND_LOG_SUBSCRIPTION_INVALID', '宿主前端日志订阅返回的取消函数必须是函数。');
+            underlying = unsubscribe;
+            if (pendingCancel) {
+                pendingCancel = false;
+                cancel();
+            }
+            return cancel;
+        });
     }
     listWorldInfoNames() {
         return Array.isArray(this.worldInfoModule.world_names)
@@ -344,5 +454,151 @@ export class TauriTavernHost {
             remove(event, wrapped);
             this.log?.debug('event.generation_ended_unsubscribed');
         };
+    }
+    macroProcess(content) {
+        const text = String(content ?? '');
+        if (!text)
+            return '';
+        const substitute = this.scriptModule?.substituteParams;
+        if (typeof substitute !== 'function')
+            return text;
+        try {
+            const result = substitute(text);
+            return String(result ?? text);
+        }
+        catch (error) {
+            this.log?.warn('host.macro_process_failed', {
+                data: { kind: error instanceof Error ? error.name : typeof error },
+            });
+            return text;
+        }
+    }
+    async getCurrentChatIdentity() {
+        return this.identity();
+    }
+    async getPromptConflictChatMetadata() {
+        return this.chatExtensionGet(PROMPT_CONFLICT_CHAT_NAMESPACE);
+    }
+    async setPromptConflictChatMetadata(expectedStableId, value) {
+        await this.chatExtensionSet(expectedStableId, PROMPT_CONFLICT_CHAT_NAMESPACE, value);
+    }
+    async openAiPromptManager() {
+        if (!this.openAiModule) {
+            this.openAiModule = await (this.dynamicImport ?? dynamicImport)(OPENAI_URL);
+            if (!this.openAiModule || !('promptManager' in this.openAiModule))
+                throw new ToolkitError('HOST_EXPORT_MISSING', 'TauriTavern 缺少 openai.js 的 promptManager 导出。');
+        }
+        const promptManager = this.openAiModule.promptManager;
+        if (!promptManager)
+            throw new ToolkitError('PROMPT_MANAGER_UNAVAILABLE', 'PromptManager 尚未初始化，无法读取当前预设。');
+        return promptManager;
+    }
+    async getPromptConflictPresetSources() {
+        const promptManager = await this.openAiPromptManager();
+        if (typeof promptManager.getPromptById !== 'function'
+            || typeof promptManager.getPromptOrderForCharacter !== 'function'
+            || typeof promptManager.shouldTrigger !== 'function'
+            || typeof promptManager.preparePrompt !== 'function') {
+            throw new ToolkitError('HOST_EXPORT_MISSING', 'TauriTavern PromptManager 缺少必需方法，冲突检测无法读取预设。');
+        }
+        const promptOrder = promptManager.getPromptOrderForCharacter(promptManager.activeCharacter) ?? [];
+        if (!Array.isArray(promptOrder))
+            throw new ToolkitError('HOST_EXPORT_MISSING', 'TauriTavern PromptManager 返回了非法 prompt order。');
+        const sources = [];
+        for (const entry of promptOrder) {
+            const identifier = entry?.identifier;
+            const enabled = entry?.enabled === true;
+            const prompt = enabled ? promptManager.getPromptById(identifier) : null;
+            if (!prompt || prompt.marker === true)
+                continue;
+            let prepared;
+            try {
+                prepared = promptManager.preparePrompt(prompt);
+            }
+            catch (error) {
+                this.log?.warn('prompt_conflict.prepare_failed', {
+                    data: { kind: error instanceof Error ? error.name : typeof error },
+                });
+                continue;
+            }
+            const content = String(prepared?.content ?? '');
+            if (!content.trim())
+                continue;
+            let trigger = true;
+            try {
+                trigger = promptManager.shouldTrigger(prompt, 'normal');
+            }
+            catch {
+                trigger = true;
+            }
+            if (!trigger)
+                continue;
+            sources.push({
+                identifier: String(identifier ?? ''),
+                label: String(prompt.name || prompt.identifier || identifier || ''),
+                role: String(prompt.role ?? 'system'),
+                position: Number(prompt.injection_position ?? prompt.position ?? 0),
+                order: Number(prompt.injection_order ?? 0),
+                content,
+            });
+        }
+        return sources;
+    }
+    subscribePromptConflictSourceInvalidation(listener) {
+        if (typeof listener !== 'function')
+            throw new TypeError('冲突检测来源失效订阅需要函数回调');
+        const disposers = PROMPT_CONFLICT_INVALIDATION_EVENTS.map(name => {
+            const dispose = this.onHostEvent(name, (...args) => listener({ type: name, args }));
+            this.log?.debug('prompt_conflict.invalidation_subscribed', { data: { event: name } });
+            return dispose;
+        });
+        return () => {
+            for (const dispose of disposers.splice(0))
+                dispose();
+            this.log?.debug('prompt_conflict.invalidation_unsubscribed');
+        };
+    }
+    validateWorldInfoEntriesPayload(payload) {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+            throw new ToolkitError('HOST_EVENT_INVALID', 'WORLDINFO_ENTRIES_LOADED 负载必须是对象。');
+        for (const listName of ['globalLore', 'characterLore', 'chatLore', 'personaLore']) {
+            if (!Array.isArray(payload[listName]))
+                throw new ToolkitError('HOST_EVENT_INVALID', `WORLDINFO_ENTRIES_LOADED 缺少 ${listName} 数组。`);
+        }
+        return payload;
+    }
+    subscribeWorldInfoEntriesLoaded(listener) {
+        if (typeof listener !== 'function')
+            throw new TypeError('世界书条目加载订阅需要函数回调');
+        return this.onHostEvent('WORLDINFO_ENTRIES_LOADED', payload => {
+            listener(payload);
+        });
+    }
+    async getMountedWorldInfoEntries() {
+        const cache = this.worldInfoModule?.worldInfoCache;
+        if (!cache || typeof cache.get !== 'function')
+            throw new ToolkitError('HOST_EXPORT_MISSING', 'TauriTavern 缺少世界书缓存访问接口。');
+        const groups = { globalLore: [], characterLore: [], chatLore: [], personaLore: [] };
+        const bySource = { global: 'globalLore', character: 'characterLore', chat: 'chatLore', persona: 'personaLore' };
+        for (const binding of this.activeWorldInfoBindings()) {
+            const listName = bySource[binding.source];
+            if (!listName)
+                continue;
+            const data = cache.get(binding.name);
+            if (!data || !data.entries || typeof data.entries !== 'object')
+                continue;
+            for (const entry of Object.values(data.entries)) {
+                if (!entry || typeof entry !== 'object')
+                    continue;
+                groups[listName].push({ ...entry, world: binding.name });
+            }
+        }
+        return groups;
+    }
+    async expandPromptConflictSourceMacros(content) {
+        return this.macroProcess(content);
+    }
+    async promptConflictWorldDigest(worldName) {
+        return sha256Hex(worldName);
     }
 }

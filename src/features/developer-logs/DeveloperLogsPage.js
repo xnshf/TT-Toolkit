@@ -116,8 +116,31 @@ function option(value, text, selected = false) {
 
 export function mountDeveloperLogsPage(target, props) {
     const runtime = props.runtime;
+    const log = props.log ?? null;
     const featureCatalog = [{ id: 'system', label: '系统' }, ...(props.featureCatalog ?? [])];
     const featureLabels = new Map(featureCatalog.map(feature => [feature.id, feature.label]));
+    const reportFailure = (event, operation, error) => {
+        if (error?.name === 'AbortError')
+            return;
+        log?.fail?.(event, operation, error);
+    };
+    const hostStatusIssues = () => {
+        const issues = [];
+        const status = runtime.state.hostFrontendStatus;
+        if (status?.phase === 'unavailable')
+            issues.push('宿主前端日志不可用');
+        if (status?.phase === 'degraded')
+            issues.push('宿主日志流已降级');
+        if (runtime.state.persistenceError)
+            issues.push('持久化失败');
+        if (runtime.state.configurationError)
+            issues.push('日志设置损坏');
+        if (runtime.state.legacyLogsDetected)
+            issues.push('旧版日志结构');
+        if (runtime.state.hostConsoleCaptureError)
+            issues.push('宿主 console 状态未知');
+        return issues;
+    };
     const view = {
         enabled: props.enabled,
         draft: structuredClone(runtime.state.settings),
@@ -191,26 +214,59 @@ export function mountDeveloperLogsPage(target, props) {
 
     async function exportDownload(records, format, actionId) {
         // Invoke the picker before log generation awaits so transient user activation is retained.
-        const destination = await chooseExportDestination(target, format);
+        let destination;
+        try {
+            destination = await chooseExportDestination(target, format);
+        }
+        catch (error) {
+            reportFailure('export.file_failed', 'export.file', error);
+            throw error;
+        }
         if (destination.kind === 'cancelled') {
             view.actionNotice = { kind: 'neutral', text: '已取消导出。' };
             return;
         }
-        const text = runtime.exportEntries(records, format);
-        if (destination.kind === 'file') {
-            await writeExportFile(destination, text);
-            view.actionNotice = { kind: 'success', text: `导出成功：${destination.handle.name || destination.filename}` };
+        let text;
+        try {
+            text = runtime.exportEntries(records, format);
         }
-        else {
-            downloadText(target, text, format, destination.filename);
-            view.actionNotice = { kind: 'success', text: `当前 WebView 不支持选择保存位置，已下载到默认目录：${destination.filename}` };
+        catch (error) {
+            reportFailure('export.serialize_failed', 'export.serialize', error);
+            throw error;
         }
-        view.completedAction = actionId;
+        try {
+            if (destination.kind === 'file') {
+                await writeExportFile(destination, text);
+                view.actionNotice = { kind: 'success', text: `导出成功：${destination.handle.name || destination.filename}` };
+            }
+            else {
+                downloadText(target, text, format, destination.filename);
+                view.actionNotice = { kind: 'success', text: `当前 WebView 不支持选择保存位置，已下载到默认目录：${destination.filename}` };
+            }
+            view.completedAction = actionId;
+        }
+        catch (error) {
+            reportFailure('export.file_failed', 'export.file', error);
+            throw error;
+        }
     }
 
     async function exportCopy(records, format, actionId) {
-        const text = runtime.exportEntries(records, format);
-        await copyText(target, text);
+        let text;
+        try {
+            text = runtime.exportEntries(records, format);
+        }
+        catch (error) {
+            reportFailure('export.serialize_failed', 'export.serialize', error);
+            throw error;
+        }
+        try {
+            await copyText(target, text);
+        }
+        catch (error) {
+            reportFailure('export.copy_failed', 'export.copy', error);
+            throw error;
+        }
         view.actionNotice = { kind: 'success', text: `复制成功：${format.toUpperCase()} 日志已写入剪贴板。` };
         view.completedAction = actionId;
     }
@@ -297,12 +353,36 @@ export function mountDeveloperLogsPage(target, props) {
                 h('i', { text: entry.source }),
                 h('strong', { text: entry.event }),
             );
-            if (view.expanded === entryKey)
-                row.append(h('pre', { text: JSON.stringify({ sessionId: entrySessionId, ...entry }, null, 2) }));
+            if (view.expanded === entryKey) {
+                if (entry.featureId === 'system' && entry.source === 'host-frontend') {
+                    const details = h('div', { className: 'log-expanded-host' },
+                        h('pre', { text: JSON.stringify({
+                            hostEntryId: entry.data?.hostEntryId,
+                            hostTimestampMs: entry.data?.hostTimestampMs,
+                            hostLevel: entry.data?.hostLevel,
+                            messagePresent: entry.data?.messagePresent,
+                        }, null, 2) }),
+                    );
+                    if (entry.privacyMode === 'full') {
+                        if (typeof entry.sensitive?.message === 'string')
+                            details.append(h('p', { className: 'log-host-message', text: entry.sensitive.message }));
+                        if (typeof entry.sensitive?.target === 'string')
+                            details.append(h('p', { className: 'log-host-target', text: `来源：${entry.sensitive.target}` }));
+                    }
+                    else {
+                        details.append(h('p', { className: 'log-host-redacted', text: '消息因隐私模式未保存' }));
+                    }
+                    row.append(details);
+                }
+                else {
+                    row.append(h('pre', { text: JSON.stringify({ sessionId: entrySessionId, ...entry }, null, 2) }));
+                }
+            }
             list.append(row);
         }
-        if (!visible.length)
-            list.append(h('p', { className: 'empty-state', text: '没有匹配的日志。' }));
+        if (!visible.length) {
+            list.append(h('p', { className: 'empty-state', text: hostStatusIssues().length ? '暂无匹配的日志。' : '没有匹配的日志。' }));
+        }
         return [list, h('div', { className: 'pager' },
             actionButton('上一页', () => { view.page -= 1; render(); }, { disabled: view.page === 0 }),
             h('span', { text: `${view.page + 1} / ${pageCount}` }),
@@ -332,12 +412,19 @@ export function mountDeveloperLogsPage(target, props) {
         ));
         if (view.draft.privacyMode === 'full')
             root.append(callout('完整模式会记录相关聊天正文、规则和 before/after，导出文件可能包含敏感内容。', 'danger'));
+        const hostStatus = runtime.state.hostFrontendStatus;
+        if (hostStatus?.phase === 'unavailable')
+            root.append(callout(`宿主前端日志不可用：${hostStatus.message}。日志功能无法启动，其它工具不受影响。`, 'danger'));
+        if (hostStatus?.phase === 'degraded')
+            root.append(callout(`宿主日志流已停止：${hostStatus.message || '运行期宿主日志契约错误'}。当前会话继续记录 TT-Toolkit 自身事件，不会自动重连；请关闭后重新启用日志。`, 'warning'));
         if (runtime.state.configurationError)
             root.append(callout(`日志设置损坏：${runtime.state.configurationError}`, 'danger'));
         if (runtime.state.legacyLogsDetected)
             root.append(callout('检测到旧版日志结构。旧日志不会被推断归类；请清空日志后重新启用记录。', 'danger'));
         if (runtime.state.persistenceError)
             root.append(callout(runtime.state.persistenceError, 'danger'));
+        if (runtime.state.hostConsoleCaptureError)
+            root.append(callout(`宿主 console 捕获状态未知：${runtime.state.hostConsoleCaptureError}`, 'warning'));
         if (view.notice)
             root.append(callout(view.notice));
         root.append(settingsGrid());

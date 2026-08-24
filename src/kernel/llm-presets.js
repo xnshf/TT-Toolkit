@@ -100,4 +100,15 @@ export class LlmPresetStore {
             throw new ToolkitError('LLM_PRESET_MISSING', '尚未选择可用的模型预设。');
         return preset;
     }
+
+    async byId(presetId) {
+        const id = String(presetId ?? '').trim();
+        if (!id)
+            throw new ToolkitError('LLM_PRESET_MISSING', '尚未选择可用的模型预设。');
+        const settings = await this.load();
+        const preset = settings.presets.find(item => item.id === id);
+        if (!preset)
+            throw new ToolkitError('LLM_PRESET_MISSING', '模型预设不存在或尚未保存。');
+        return preset;
+    }
 }

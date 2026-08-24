@@ -1,14 +1,10 @@
 import { ToolkitError } from '../../kernel/errors.js';
+import { detectPromptTemplateEntry } from '../../kernel/dynamic-template.js';
+
+export { detectPromptTemplateEntry } from '../../kernel/dynamic-template.js';
 
 export const WORLD_INFO_EXTENSION_KEY = 'tt-toolkit';
 export const WORLD_INFO_ROUTER_FIELD = 'worldInfoAiRouter';
-
-const PROMPT_TEMPLATE_DECORATORS = new Set([
-    '@@message_formatting', '@@generate_before', '@@generate_after',
-    '@@render_before', '@@render_after', '@@dont_preload',
-    '@@initial_variables', '@@always_enabled', '@@only_preload',
-    '@@iframe', '@@preprocessing', '@@if', '@@private',
-]);
 
 function plainObject(value, label) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -81,30 +77,34 @@ export function embedWorldInfoAiConfig(worldData, config) {
     return data;
 }
 
-function leadingDecorators(content) {
-    const output = [];
-    for (const line of String(content ?? '').split(/\r?\n/)) {
-        if (!line.startsWith('@@') || line.startsWith('@@@'))
-            break;
-        output.push(line.split(/\s+/, 1)[0].toLowerCase());
-    }
-    return output;
-}
-
-export function detectPromptTemplateEntry(entry) {
-    const content = String(entry?.content ?? '');
-    const comment = String(entry?.comment ?? '');
-    const reasons = [];
-    if (content.includes('<%') || content.includes('%>') || /<#\/?escape-ejs>/i.test(content))
-        reasons.push('EJS 语法');
-    if (/\[GENERATE:|\[RENDER:|@INJECT|\[InitialVariables\]|\[Preprocessing\]/i.test(comment))
-        reasons.push('Prompt Template 专用标题');
-    const decorators = leadingDecorators(content).filter(value => PROMPT_TEMPLATE_DECORATORS.has(value));
-    if (decorators.length)
-        reasons.push(`Prompt Template 装饰器 ${decorators.join('、')}`);
-    return { detected: reasons.length > 0, reasons };
-}
-
 export function worldEntryKey(world, uid) {
     return `${String(world)}.${String(uid)}`;
+}
+
+export function worldInfoTriggerType(entry) {
+    if (entry?.constant === true)
+        return 'constant';
+    if (entry?.vectorized === true || entry?.extensions?.vectorized === true)
+        return 'vectorized';
+    return 'keyword';
+}
+
+export function isAiModeEligible(entry) {
+    return worldInfoTriggerType(entry) === 'keyword' && !detectPromptTemplateEntry(entry).detected;
+}
+
+export function createDefaultWorldInfoAiFeatureSettings() {
+    return { schemaVersion: 1, presetId: null };
+}
+
+export function parseWorldInfoAiFeatureSettings(value) {
+    if (value === undefined || value === null)
+        return createDefaultWorldInfoAiFeatureSettings();
+    const raw = plainObject(value, '世界书 AI 功能设置');
+    exactKeys(raw, ['schemaVersion', 'presetId'], '世界书 AI 功能设置');
+    if (raw.schemaVersion !== 1)
+        throw new ToolkitError('UNSUPPORTED_SCHEMA', `不支持的世界书 AI 功能设置版本：${String(raw.schemaVersion)}`);
+    if (raw.presetId !== null && typeof raw.presetId !== 'string')
+        throw new ToolkitError('INVALID_SCHEMA', '世界书 AI 功能设置的 presetId 必须是字符串或 null。');
+    return { schemaVersion: 1, presetId: raw.presetId };
 }
