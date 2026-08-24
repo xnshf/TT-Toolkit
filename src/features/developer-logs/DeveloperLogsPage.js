@@ -1,6 +1,7 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
 import { errorMessage } from '../../kernel/errors.js';
 import { MIB } from '../../kernel/logging/schema.js';
+import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 
 const PAGE_SIZE = 100;
 const LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -154,13 +155,28 @@ export function mountDeveloperLogsPage(target, props) {
         exportFormat: 'log',
         page: 0,
         expanded: null,
-        notice: '',
         actionNotice: null,
         completedAction: '',
         paused: false,
         pausedEntries: [],
     };
     let disposed = false;
+    let actionNoticeTimer = null;
+    const notices = createNoticeController(() => render());
+
+    function setActionNotice(notice) {
+        if (actionNoticeTimer !== null)
+            clearTimeout(actionNoticeTimer);
+        actionNoticeTimer = null;
+        view.actionNotice = notice;
+        if (notice && (notice.kind === 'success' || notice.kind === 'neutral')) {
+            actionNoticeTimer = setTimeout(() => {
+                actionNoticeTimer = null;
+                view.actionNotice = null;
+                render();
+            }, notice.kind === 'success' ? 4500 : 3000);
+        }
+    }
 
     const selectedSessions = () => view.selectedSession
         ? runtime.state.sessions.filter(session => session.id === view.selectedSession)
@@ -177,8 +193,9 @@ export function mountDeveloperLogsPage(target, props) {
         && (!view.search || JSON.stringify(event).toLowerCase().includes(view.search.toLowerCase())));
 
     const run = async (task, action = null) => {
+        notices.clear();
         if (action) {
-            view.actionNotice = { kind: 'progress', text: action.progress };
+            setActionNotice({ kind: 'progress', text: action.progress });
             view.completedAction = '';
             render();
         }
@@ -188,9 +205,9 @@ export function mountDeveloperLogsPage(target, props) {
         catch (error) {
             const message = errorMessage(error);
             if (action)
-                view.actionNotice = { kind: 'error', text: message };
+                setActionNotice({ kind: 'error', text: message });
             else
-                view.notice = message;
+                notices.show(message, 'danger');
         }
         render();
     };
@@ -223,7 +240,7 @@ export function mountDeveloperLogsPage(target, props) {
             throw error;
         }
         if (destination.kind === 'cancelled') {
-            view.actionNotice = { kind: 'neutral', text: '已取消导出。' };
+            setActionNotice({ kind: 'neutral', text: '已取消导出。' });
             return;
         }
         let text;
@@ -237,11 +254,11 @@ export function mountDeveloperLogsPage(target, props) {
         try {
             if (destination.kind === 'file') {
                 await writeExportFile(destination, text);
-                view.actionNotice = { kind: 'success', text: `导出成功：${destination.handle.name || destination.filename}` };
+                setActionNotice({ kind: 'success', text: `导出成功：${destination.handle.name || destination.filename}` });
             }
             else {
                 downloadText(target, text, format, destination.filename);
-                view.actionNotice = { kind: 'success', text: `当前 WebView 不支持选择保存位置，已下载到默认目录：${destination.filename}` };
+                setActionNotice({ kind: 'success', text: `当前 WebView 不支持选择保存位置，已下载到默认目录：${destination.filename}` });
             }
             view.completedAction = actionId;
         }
@@ -267,7 +284,7 @@ export function mountDeveloperLogsPage(target, props) {
             reportFailure('export.copy_failed', 'export.copy', error);
             throw error;
         }
-        view.actionNotice = { kind: 'success', text: `复制成功：${format.toUpperCase()} 日志已写入剪贴板。` };
+        setActionNotice({ kind: 'success', text: `复制成功：${format.toUpperCase()} 日志已写入剪贴板。` });
         view.completedAction = actionId;
     }
 
@@ -425,8 +442,9 @@ export function mountDeveloperLogsPage(target, props) {
             root.append(callout(runtime.state.persistenceError, 'danger'));
         if (runtime.state.hostConsoleCaptureError)
             root.append(callout(`宿主 console 捕获状态未知：${runtime.state.hostConsoleCaptureError}`, 'warning'));
-        if (view.notice)
-            root.append(callout(view.notice));
+        const notice = noticeBanner(notices.current, () => notices.clear(true));
+        if (notice)
+            root.append(notice);
         root.append(settingsGrid());
         const usedBytes = runtime.state.sessions.reduce((sum, session) => sum + session.bytes, 0);
         const capture = runtime.state.hostConsoleCaptureEnabled;
@@ -436,8 +454,8 @@ export function mountDeveloperLogsPage(target, props) {
             h('span', { text: `宿主 console 捕获：${capture === null ? '未知' : capture ? '开启' : '关闭'}` }),
         ));
         root.append(h('div', { className: 'actions' },
-            actionButton('重置设置', () => { void run(async () => { await runtime.resetSettings(); view.draft = structuredClone(runtime.state.settings); view.maxMiB = view.draft.maxBytes / MIB; view.notice = '日志设置已重置。'; }); }, { className: 'secondary' }),
-            actionButton('保存设置', () => { void run(async () => { view.draft.maxBytes = Math.round(view.maxMiB * MIB); await runtime.saveSettings(structuredClone(view.draft)); view.draft = structuredClone(runtime.state.settings); view.notice = '日志设置已保存。隐私模式变化时已自动开启新会话。'; }); }, { className: 'primary' }),
+            actionButton('重置设置', () => { void run(async () => { await runtime.resetSettings(); view.draft = structuredClone(runtime.state.settings); view.maxMiB = view.draft.maxBytes / MIB; notices.show('日志设置已重置。', 'success'); }); }, { className: 'secondary' }),
+            actionButton('保存设置', () => { void run(async () => { view.draft.maxBytes = Math.round(view.maxMiB * MIB); await runtime.saveSettings(structuredClone(view.draft)); view.draft = structuredClone(runtime.state.settings); notices.show('日志设置已保存。隐私模式变化时已自动开启新会话。', 'success'); }); }, { className: 'primary' }),
         ));
         root.append(h('hr'), toolbar());
         root.append(h('div', { className: 'log-levels' }, LEVELS.map(level => {
@@ -455,7 +473,6 @@ export function mountDeveloperLogsPage(target, props) {
                 disabled: !runtime.state.currentSessionId || (view.selectedSession && view.selectedSession !== runtime.state.currentSessionId),
             }),
         ));
-        root.append(...logList());
         const format = h('select', { dataset: { control: 'export-format' } },
             option('log', 'LOG 文本', view.exportFormat === 'log'),
             option('json', 'JSON', view.exportFormat === 'json'),
@@ -481,6 +498,7 @@ export function mountDeveloperLogsPage(target, props) {
                 });
             }, { className: 'danger-button' }),
         ), logActionStatus());
+        root.append(...logList());
         target.replaceChildren(root);
         if (focusControl) {
             const control = target.querySelector(`[data-control="${focusControl}"]`);
@@ -498,6 +516,10 @@ export function mountDeveloperLogsPage(target, props) {
     });
     return () => {
         disposed = true;
+        notices.dispose();
+        if (actionNoticeTimer !== null)
+            clearTimeout(actionNoticeTimer);
+        actionNoticeTimer = null;
         unsubscribe();
         target.replaceChildren();
     };

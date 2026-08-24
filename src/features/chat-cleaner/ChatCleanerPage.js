@@ -1,5 +1,6 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
 import { errorMessage } from '../../kernel/errors.js';
+import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 
 const PAGE_SIZE = 20;
 const TABS = [['manual', '手动清洗'], ['rules', '规则设置'], ['auto', '自动清洗'], ['status', '运行状态']];
@@ -45,17 +46,19 @@ export function mountChatCleanerPage(target, props) {
         page: 0,
         expanded: null,
         draft: structuredClone(runtime.state.settings),
-        notice: '',
+        previewKeep: null,
         confirmMode: null,
     };
     let disposed = false;
+    const notices = createNoticeController(() => render());
 
     const run = async task => {
+        notices.clear();
         try {
             await task();
         }
         catch (error) {
-            view.notice = errorMessage(error);
+            notices.show(errorMessage(error), 'danger');
         }
         render();
     };
@@ -83,8 +86,9 @@ export function mountChatCleanerPage(target, props) {
         }, { className: view.tab === id ? 'active' : '' }))));
         if (!view.enabled)
             root.append(callout('功能尚未启用。可以先配置规则；启用前不会读取聊天、执行清洗或订阅生成事件。', 'warning'));
-        if (view.notice)
-            root.append(callout(view.notice));
+        const notice = noticeBanner(notices.current, () => notices.clear(true));
+        if (notice)
+            root.append(notice);
         if (runtime.state.error)
             root.append(callout(runtime.state.error, 'danger'));
     }
@@ -93,6 +97,7 @@ export function mountChatCleanerPage(target, props) {
         const section = h('div', { className: 'page-section' });
         const keep = h('input', { className: 'number-input', type: 'number', min: 0, step: 1, value: view.keep });
         keep.addEventListener('input', () => { view.keep = Number(keep.value); });
+        keep.addEventListener('change', render);
         section.append(
             settingRow('分别保留最新消息', 'AI 与用户分别保留 M 条；0 表示扫描全部可处理历史。', keep),
             h('div', { className: 'actions' }, actionButton('扫描并预览', () => {
@@ -100,7 +105,7 @@ export function mountChatCleanerPage(target, props) {
                     await runtime.previewManual(view.keep);
                     view.page = 0;
                     view.expanded = null;
-                    view.notice = '';
+                    view.previewKeep = view.keep;
                 });
             }, { className: 'primary', disabled: !view.enabled || runtime.state.busy })),
         );
@@ -127,6 +132,16 @@ export function mountChatCleanerPage(target, props) {
                 section.append(callout('存在将变为空字符串的 swipe。提交时需要额外危险确认。', 'danger'));
             const flattened = flattenPlan(plan);
             const pageCount = Math.max(1, Math.ceil(flattened.length / PAGE_SIZE));
+            const stale = view.previewKeep !== view.keep;
+            if (stale)
+                section.append(callout('保留数量已变化；请重新扫描后再永久提交。', 'warning'));
+            section.append(h('div', { className: 'feature-action-bar' },
+                h('span', { text: `本次将修改 ${plan.stats.changedMessages} 个楼层；提交后无法由插件撤销。` }),
+                actionButton('永久提交清洗', () => {
+                    view.confirmMode = hasEmpty ? 'empty' : 'normal';
+                    render();
+                }, { className: 'danger-button', disabled: stale || runtime.state.busy || plan.changes.length === 0 }),
+            ));
             view.page = Math.min(view.page, pageCount - 1);
             const visible = flattened.slice(view.page * PAGE_SIZE, (view.page + 1) * PAGE_SIZE);
             section.append(h('div', { className: 'preview-list' }, visible.map(item => {
@@ -147,10 +162,6 @@ export function mountChatCleanerPage(target, props) {
                 h('span', { text: `${view.page + 1} / ${pageCount}` }),
                 actionButton('下一页', () => { view.page += 1; render(); }, { disabled: view.page + 1 >= pageCount }),
             ));
-            section.append(h('div', { className: 'actions' }, actionButton('永久提交清洗', () => {
-                view.confirmMode = hasEmpty ? 'empty' : 'normal';
-                render();
-            }, { className: 'danger-button', disabled: runtime.state.busy || plan.changes.length === 0 })));
         }
         root.append(section);
     }
@@ -160,6 +171,14 @@ export function mountChatCleanerPage(target, props) {
         const reasoning = h('input', { type: 'checkbox', checked: view.draft.deleteNativeReasoning });
         reasoning.addEventListener('change', () => { view.draft.deleteNativeReasoning = reasoning.checked; });
         section.append(settingRow('删除原生 reasoning', '按酒馆原生行为清空明文及展示状态，保留 signature、native 与未知字段。', reasoning));
+        section.append(h('div', { className: 'feature-action-bar' },
+            h('span', { text: '保存 AI、用户与 reasoning 清洗规则。' }),
+            actionButton('保存规则', () => {
+                void run(async () => {
+                    await runtime.saveSettings(structuredClone(view.draft));
+                    notices.show('设置已保存。规则变化后，自动清洗将在当前聊天重新建立基线。', 'success');
+                });
+            }, { className: 'primary' })));
         for (const groupName of ['assistant', 'user']) {
             const group = view.draft[groupName];
             const enabled = h('input', { type: 'checkbox', checked: group.enabled });
@@ -205,12 +224,6 @@ export function mountChatCleanerPage(target, props) {
             }, { className: 'secondary' }));
             section.append(box);
         }
-        section.append(h('div', { className: 'actions' }, actionButton('保存更改', () => {
-            void run(async () => {
-                await runtime.saveSettings(structuredClone(view.draft));
-                view.notice = '设置已保存。规则变化后，自动清洗将在当前聊天重新建立基线。';
-            });
-        }, { className: 'primary' })));
         root.append(section);
     }
 
@@ -222,16 +235,18 @@ export function mountChatCleanerPage(target, props) {
         keepAssistant.addEventListener('input', () => { view.draft.auto.keepAssistant = Number(keepAssistant.value); });
         const keepUser = h('input', { className: 'number-input', type: 'number', min: 1, value: view.draft.auto.keepUser });
         keepUser.addEventListener('input', () => { view.draft.auto.keepUser = Number(keepUser.value); });
+        section.append(h('div', { className: 'feature-action-bar' },
+            h('span', { text: '保存自动清洗开关与保留数量。' }),
+            actionButton('保存自动清洗设置', () => {
+                void run(async () => {
+                    await runtime.saveSettings(structuredClone(view.draft));
+                    notices.show('设置已保存。规则变化后，自动清洗将在当前聊天重新建立基线。', 'success');
+                });
+            }, { className: 'primary' })));
         section.append(
             settingRow('生成结束后自动增量清洗', '首次运行或规则变化只建立基线，不回扫旧历史。', enabled),
             settingRow('保留最新 AI 消息', '', keepAssistant),
             settingRow('保留最新用户消息', '', keepUser),
-            h('div', { className: 'actions' }, actionButton('保存更改', () => {
-                void run(async () => {
-                    await runtime.saveSettings(structuredClone(view.draft));
-                    view.notice = '设置已保存。规则变化后，自动清洗将在当前聊天重新建立基线。';
-                });
-            }, { className: 'primary' })),
         );
         root.append(section);
     }
@@ -244,8 +259,8 @@ export function mountChatCleanerPage(target, props) {
                 text: progress ? `AI 已处理至 ${progress.assistantThrough} · 用户已处理至 ${progress.userThrough} · ${progress.lastSuccessfulAt ?? '尚未成功清洗'}` : '尚未读取。',
             })),
             h('div', { className: 'actions' },
-                actionButton('重置当前聊天断点', () => { void run(async () => { await runtime.resetProgress(); view.notice = '当前聊天清洗断点已重置。'; }); }, { className: 'secondary' }),
-                actionButton('重置清洗设置', () => { void run(async () => { await runtime.resetSettings(); view.draft = structuredClone(runtime.state.settings); view.notice = '聊天清洗设置已重置。'; }); }, { className: 'secondary' }),
+                actionButton('重置当前聊天断点', () => { void run(async () => { await runtime.resetProgress(); notices.show('当前聊天清洗断点已重置。', 'success'); }); }, { className: 'secondary' }),
+                actionButton('重置清洗设置', () => { void run(async () => { await runtime.resetSettings(); view.draft = structuredClone(runtime.state.settings); notices.show('聊天清洗设置已重置。', 'success'); }); }, { className: 'secondary' }),
             ),
         ));
     }
@@ -262,7 +277,7 @@ export function mountChatCleanerPage(target, props) {
                 actionButton('确认永久提交', () => {
                     const allowEmpty = view.confirmMode === 'empty';
                     view.confirmMode = null;
-                    void run(async () => { await runtime.commitManual(allowEmpty); view.notice = runtime.state.status; });
+                    void run(async () => { await runtime.commitManual(allowEmpty); view.previewKeep = null; notices.show(runtime.state.status, 'success'); });
                 }, { className: 'danger-button' }),
             ),
         ));
@@ -289,6 +304,7 @@ export function mountChatCleanerPage(target, props) {
     render();
     void runtime.loadProgress().catch(() => undefined);
     return () => {
+        notices.dispose();
         disposed = true;
         unsubscribe();
         target.replaceChildren();

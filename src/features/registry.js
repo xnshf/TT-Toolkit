@@ -39,6 +39,14 @@ export const featureDefinitions = [{
         order: 10,
         load: async (context) => (await import('./chat-cleaner/index.js')).createChatCleanerFeature(context),
     }, {
+        id: 'chat-exporter',
+        category: { id: 'chat-data', label: '聊天数据', order: 10 },
+        label: '聊天导出',
+        description: '将当前聊天整理为 Markdown 或纯文本文档。',
+        icon: '📄',
+        order: 30,
+        load: async (context) => (await import('./chat-exporter/index.js')).createChatExporterFeature(context),
+    }, {
         id: 'world-info-ai',
         category: { id: 'world-info', label: '世界书', order: 20 },
         label: 'AI 激活',
