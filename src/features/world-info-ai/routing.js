@@ -9,10 +9,10 @@ export function parseActivationResponse(text, candidateIds) {
         value = JSON.parse(text);
     }
     catch (error) {
-        throw new ToolkitError('AI_ROUTER_JSON_INVALID', 'AI 世界书判定未返回合法 JSON。', { error });
+        throw new ToolkitError('AI_ROUTER_JSON_INVALID', 'AI 世界书判定未返回合法 JSON。', { error, preview: String(text ?? '').slice(0, 800) });
     }
     if (!value || typeof value !== 'object' || Array.isArray(value)
-        || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'activate')
+        || !Object.hasOwn(value, 'activate')
         || !Array.isArray(value.activate) || value.activate.some(item => typeof item !== 'string')) {
         throw new ToolkitError('AI_ROUTER_RESPONSE_INVALID', 'AI 世界书判定返回结构无效。');
     }
@@ -39,6 +39,10 @@ export function neutralizeAiEntryTriggers(entry) {
         ...entry,
         content: stripNativeActivationDecorators(entry.content),
         disable: false,
+        key: [],
+        keysecondary: [],
+        constant: false,
+        vectorized: false,
         triggers: [],
         characterFilter: null,
         sticky: 0,

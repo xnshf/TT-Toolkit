@@ -1,7 +1,12 @@
 import { mountDeveloperLogsPage } from './DeveloperLogsPage.js';
 export async function createDeveloperLogsFeature(context) {
     return {
-        mount: (target, props) => mountDeveloperLogsPage(target, { ...props, runtime: context.logger, featureCatalog: context.featureCatalog }),
+        mount: (target, props) => mountDeveloperLogsPage(target, {
+            ...props,
+            runtime: context.logger,
+            featureCatalog: context.featureCatalog,
+            log: context.logger.scoped({ featureId: 'system', source: 'logger-ui' }),
+        }),
         activate: () => context.logger.start(),
         deactivate: () => context.logger.stop(),
     };

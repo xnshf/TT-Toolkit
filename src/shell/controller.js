@@ -1,4 +1,5 @@
 import { parseShellSettings } from '../kernel/settings.js';
+import { errorKind } from '../kernel/errors.js';
 import { mountToolkitApp } from '../ui/main.js';
 
 const STYLE_URL = '/scripts/extensions/third-party/TT-Toolkit/style.css';
@@ -136,7 +137,7 @@ export class ShellController {
       });
     } catch (error) {
       this.log.error('feature.activation_failed', {
-        data: { featureId: feature.id },
+        data: { featureId: feature.id, operation: 'feature.activate', ...errorKind(error) },
         sensitive: { error },
       });
       console.error(`[TT-Toolkit] Feature ${feature.id} failed to activate`, error);
@@ -260,10 +261,19 @@ export class ShellController {
   async setFeatureEnabled(id, value) {
     const feature = this.features.find(item => item.id === id);
     if (!feature) return;
-    if (value) await feature.activate();
-    else {
-      this.log.info('feature.disabling', { data: { featureId: id } });
-      await feature.deactivate();
+    try {
+      if (value) {
+        await feature.activate();
+      } else {
+        this.log.info('feature.disabling', { data: { featureId: id } });
+        await feature.deactivate();
+      }
+    } catch (error) {
+      this.log.error(value ? 'feature.activation_failed' : 'feature.deactivation_failed', {
+        data: { featureId: id, operation: value ? 'feature.activate' : 'feature.deactivate', ...errorKind(error) },
+        sensitive: { error },
+      });
+      throw error;
     }
     this.enabled[id] = value;
     await this.persist();

@@ -2,7 +2,7 @@ import { mountModelSettingsPage } from './ModelSettingsPage.js';
 import { ModelSettingsRuntime } from './runtime.js';
 
 export async function createModelSettingsFeature(context) {
-    const runtime = new ModelSettingsRuntime(context.host);
+    const runtime = new ModelSettingsRuntime(context.host, context.logger);
     return {
         mount: (target, props) => mountModelSettingsPage(target, { ...props, runtime }),
         activate: async () => undefined,

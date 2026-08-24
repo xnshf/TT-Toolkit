@@ -1,11 +1,5 @@
-import { ToolkitError, errorMessage } from '../../kernel/errors.js';
+import { ToolkitError, errorKind, errorMessage } from '../../kernel/errors.js';
 import { buildChatViewModel, matchesMessageTarget, searchChatMessages, selectChatRange } from './model.js';
-
-function diagnosticError(error) {
-    return error instanceof ToolkitError
-        ? { kind: 'ToolkitError', code: error.code, message: error.message }
-        : { kind: error instanceof Error ? error.name : typeof error };
-}
 
 export class ChatViewerRuntime {
     mutable = {
@@ -69,7 +63,7 @@ export class ChatViewerRuntime {
     }
 
     async refresh() {
-        return this.runBusy(async () => {
+        return this.runBusy('chat.snapshot', async () => {
             const model = buildChatViewModel(await this.host.snapshot());
             this.mutable.model = model;
             this.mutable.stale = false;
@@ -90,17 +84,21 @@ export class ChatViewerRuntime {
     }
 
     async range(start, end) {
-        const model = await this.ensureFresh();
-        return { model, items: selectChatRange(model, start, end) };
+        return this.runBusy('chat.range', async () => {
+            const model = await this.ensureFresh();
+            return { model, items: selectChatRange(model, start, end) };
+        });
     }
 
     async search(query) {
-        const model = await this.ensureFresh();
-        return { model, items: searchChatMessages(model, query) };
+        return this.runBusy('chat.search', async () => {
+            const model = await this.ensureFresh();
+            return { model, items: searchChatMessages(model, query) };
+        });
     }
 
     async jump(item) {
-        return this.runBusy(async () => {
+        return this.runBusy('chat.jump', async () => {
             const previousModel = this.mutable.model;
             if (!previousModel)
                 throw new ToolkitError('NO_SNAPSHOT', '请先读取当前聊天。');
@@ -133,23 +131,28 @@ export class ChatViewerRuntime {
         });
     }
 
-    async runBusy(task) {
-        if (this.mutable.busy)
-            throw new ToolkitError('BUSY', '聊天查看正在执行其它操作。');
-        this.mutable.busy = true;
-        this.mutable.error = '';
-        this.notify();
+    async runBusy(operation, task) {
+        const nested = this.mutable.busy;
+        if (!nested) {
+            this.mutable.busy = true;
+            this.mutable.error = '';
+            this.notify();
+        }
         try {
             return await task();
         }
         catch (error) {
-            this.mutable.error = errorMessage(error);
-            this.log.error('operation.failed', { data: diagnosticError(error), sensitive: { error } });
+            if (!nested) {
+                this.log.error('operation.failed', { data: { operation, ...errorKind(error) }, sensitive: { error } });
+                this.mutable.error = errorMessage(error);
+            }
             throw error;
         }
         finally {
-            this.mutable.busy = false;
-            this.notify();
+            if (!nested) {
+                this.mutable.busy = false;
+                this.notify();
+            }
         }
     }
 }

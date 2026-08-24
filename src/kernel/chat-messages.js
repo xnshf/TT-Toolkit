@@ -23,7 +23,7 @@ export function hasAssistantProvenance(raw) {
         && raw.mes === raw.swipes[swipeId];
 }
 
-export function classifyMessage(raw, messageIndex) {
+export function classifyMessage(raw, messageIndex, context = {}) {
     if (!isRecord(raw))
         throw new ToolkitError('INVALID_MESSAGE', '聊天楼层必须是对象', { messageIndex });
     const extra = isRecord(raw.extra) ? raw.extra : {};
@@ -36,6 +36,11 @@ export function classifyMessage(raw, messageIndex) {
     if (raw.is_system !== true)
         return 'assistant';
     if (hasAssistantProvenance(raw))
+        return 'assistant';
+    // Older/imported character chats can retain the opening greeting as is_system.
+    // Explicit system/tool markers above always win, and this exception is limited
+    // to the canonical first floor of a character chat.
+    if (messageIndex === 0 && context.chatKind === 'character')
         return 'assistant';
     throw new ToolkitError('AMBIGUOUS_MESSAGE_ROLE', `楼层 ${messageIndex} 标记为 is_system，但无法可靠区分系统消息与隐藏的 AI 消息`, { messageIndex });
 }

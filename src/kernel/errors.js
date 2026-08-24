@@ -11,3 +11,10 @@ export class ToolkitError extends Error {
 export function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
+export function errorKind(error) {
+    if (error instanceof ToolkitError)
+        return { kind: 'ToolkitError', code: error.code };
+    if (error instanceof Error)
+        return { kind: error.name };
+    return { kind: typeof error };
+}

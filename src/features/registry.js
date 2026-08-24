@@ -1,4 +1,10 @@
-export const featureRegistrations = [{
+export const temporarilyHiddenFeatureIds = Object.freeze([
+    'model-settings',
+    'world-info-ai',
+    'prompt-conflict',
+]);
+
+export const featureDefinitions = [{
         id: 'model-settings',
         category: { id: 'settings', label: '设置', order: 90 },
         label: '模型服务',
@@ -40,4 +46,17 @@ export const featureRegistrations = [{
         icon: '🧭',
         order: 10,
         load: async (context) => (await import('./world-info-ai/index.js')).createWorldInfoAiFeature(context),
+    }, {
+        id: 'prompt-conflict',
+        category: { id: 'world-info', label: '世界书', order: 20 },
+        label: '冲突检测',
+        description: '对照当前预设与挂载世界书中的常驻指令，并管理当前聊天的世界书屏蔽。',
+        icon: '⚖️',
+        order: 20,
+        defaultEnabled: false,
+        load: async (context) => (await import('./prompt-conflict/index.js')).createPromptConflictFeature(context),
     }];
+
+export const featureRegistrations = featureDefinitions.filter(
+    feature => !temporarilyHiddenFeatureIds.includes(feature.id),
+);

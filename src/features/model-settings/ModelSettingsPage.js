@@ -56,6 +56,7 @@ export function mountModelSettingsPage(target, props) {
         view.noticeKind = '';
         render();
         try {
+            runtime.protectDraft(view.draft);
             const models = await runtime.fetchModels(structuredClone(preset));
             view.modelOptions.set(preset.id, models);
             view.notice = models.length
@@ -79,6 +80,7 @@ export function mountModelSettingsPage(target, props) {
         view.noticeKind = '';
         render();
         try {
+            runtime.protectDraft(view.draft);
             const result = await runtime.testConnection(structuredClone(preset));
             view.notice = `连接成功；服务端返回 ${result.modelCount} 个模型。`;
             view.noticeKind = '';
@@ -159,6 +161,7 @@ export function mountModelSettingsPage(target, props) {
             actionButton('添加预设', addPreset, { className: 'secondary' }),
             actionButton('保存模型预设', () => {
                 void run(async () => {
+                    runtime.protectDraft(view.draft);
                     await runtime.save(structuredClone(view.draft));
                     view.draft = structuredClone(runtime.state.settings);
                 });

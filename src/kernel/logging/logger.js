@@ -1,12 +1,16 @@
-import { errorMessage } from '../errors.js';
+import { errorKind, errorMessage } from '../errors.js';
 import { createDefaultLogIndex, createDefaultLogSettings, levelEnabled, parseLogIndex, parseLogSettings } from './schema.js';
 import { boundLogEvent, projectLogPayload } from './serialize.js';
 const SETTINGS_KEY = 'logger-settings-v1';
 const LOG_TABLE = 'logs';
 const INDEX_KEY = 'index-v2';
 const LEGACY_INDEX_KEY = 'index-v1';
+const LLM_PRESETS_KEY = 'llm-presets-v1';
 const FLUSH_INTERVAL_MS = 1000;
 const FLUSH_BYTES = 256 * 1024;
+const REDACTED_PROTECTED_VALUE = '[REDACTED_PROTECTED_VALUE]';
+const PROTECTED_PRESET_FIELDS = ['name', 'apiUrl', 'model', 'apiKey'];
+const REFLUX_PREFIX_PATTERN = /^\[TT-Toolkit\]\[[^\]\n]+\]\[[^\]\n]+\]\[[^\]\n]+\]/;
 function sessionId() {
     return `s-${Date.now()}-${crypto.randomUUID()}`;
 }
@@ -32,6 +36,11 @@ export class ToolkitLogger {
     persistenceAvailable = true;
     storageBlocked = false;
     volatileSessions = new Map();
+    hostSubscriptionCancel = null;
+    hostIdSet = new Set();
+    protectedValues = new Set();
+    protectedValuesError = '';
+    operationQueue = Promise.resolve();
     mutable = {
         enabled: false,
         settings: createDefaultLogSettings(),
@@ -42,6 +51,8 @@ export class ToolkitLogger {
         configurationError: '',
         legacyLogsDetected: false,
         hostConsoleCaptureEnabled: null,
+        hostConsoleCaptureError: '',
+        hostFrontendStatus: { phase: 'idle', code: '', message: '', importedCount: 0 },
     };
     state = this.mutable;
     listeners = new Set();
@@ -62,6 +73,11 @@ export class ToolkitLogger {
             for (const listener of this.listeners)
                 listener(this.state);
         });
+    }
+    enqueue(task) {
+        const result = this.operationQueue.then(task, task);
+        this.operationQueue = result.catch(() => undefined);
+        return result;
     }
     async initialize() {
         try {
@@ -96,15 +112,82 @@ export class ToolkitLogger {
                 ? errorMessage(error)
                 : `日志索引读取失败：${errorMessage(error)}`;
         }
-        try {
-            this.mutable.hostConsoleCaptureEnabled = await this.host.getHostConsoleCaptureEnabled();
-        }
-        catch (error) {
-            this.mutable.persistenceError ||= `宿主日志状态读取失败：${errorMessage(error)}`;
-        }
+        await this.probeHostFrontendLogs();
+        await this.loadProtectedValues();
         globalThis.addEventListener('pagehide', () => { if (this.mutable.enabled)
             void this.flush(); });
         this.notify();
+    }
+    async probeHostFrontendLogs() {
+        try {
+            this.host.assertFrontendLogsCapability();
+            this.mutable.hostFrontendStatus = { phase: 'idle', code: '', message: '', importedCount: 0 };
+        }
+        catch (error) {
+            this.mutable.hostFrontendStatus = {
+                phase: 'unavailable',
+                code: error?.code ?? 'HOST_FRONTEND_LOGS_MISSING',
+                message: errorMessage(error),
+                importedCount: 0,
+            };
+        }
+        if (this.mutable.hostFrontendStatus.phase !== 'unavailable') {
+            try {
+                this.mutable.hostConsoleCaptureEnabled = await this.host.getHostConsoleCaptureEnabled();
+                this.mutable.hostConsoleCaptureError = '';
+            }
+            catch (error) {
+                this.mutable.hostConsoleCaptureEnabled = null;
+                this.mutable.hostConsoleCaptureError = errorMessage(error);
+            }
+        }
+    }
+    async loadProtectedValues() {
+        this.protectedValuesError = '';
+        try {
+            const raw = await this.host.globalGet(LLM_PRESETS_KEY);
+            if (raw !== undefined && raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+                const presets = Array.isArray(raw.presets) ? raw.presets : [];
+                for (const preset of presets)
+                    this.protectValues(preset);
+            }
+        }
+        catch (error) {
+            this.protectedValuesError = `模型预设值保护不可用：${errorMessage(error)}`;
+        }
+    }
+    protectValues(values) {
+        if (Array.isArray(values)) {
+            for (const item of values)
+                this.protectValues(item);
+            return;
+        }
+        if (!values || typeof values !== 'object')
+            return;
+        if (Array.isArray(values.presets)) {
+            for (const preset of values.presets)
+                this.protectValues(preset);
+        }
+        for (const key of PROTECTED_PRESET_FIELDS) {
+            const value = values[key];
+            if (typeof value === 'string' && value)
+                this.protectedValues.add(value);
+        }
+    }
+    redactProtected(value, seen = new WeakSet()) {
+        if (typeof value === 'string')
+            return this.protectedValues.has(value) ? REDACTED_PROTECTED_VALUE : value;
+        if (value === null || value === undefined || typeof value !== 'object')
+            return value;
+        if (seen.has(value))
+            return value;
+        seen.add(value);
+        if (Array.isArray(value))
+            return value.map(item => this.redactProtected(item, seen));
+        const output = {};
+        for (const [key, item] of Object.entries(value))
+            output[key] = this.redactProtected(item, seen);
+        return output;
     }
     scoped(context) {
         if (!context || typeof context !== 'object' || typeof context.featureId !== 'string' || !context.featureId || typeof context.source !== 'string' || !context.source)
@@ -115,59 +198,250 @@ export class ToolkitLogger {
             info: (event, input) => this.record('info', featureId, source, event, input),
             warn: (event, input) => this.record('warn', featureId, source, event, input),
             error: (event, input) => this.record('error', featureId, source, event, input),
+            fail: (event, operation, error, options = {}) => {
+                const includeError = options.includeError !== false;
+                const data = { operation, ...errorKind(error) };
+                this.record('error', featureId, source, event, includeError ? { data, sensitive: { error } } : { data });
+            },
         };
     }
-    async start() {
+    start(options = {}) {
+        return this.enqueue(() => this._startInternal(options));
+    }
+    stop() {
+        return this.enqueue(() => this._stopInternal());
+    }
+    async _startInternal({ importHostTail = true } = {}) {
         if (this.mutable.enabled)
             return;
         if (this.mutable.configurationError)
             throw new Error(`日志设置不可用：${this.mutable.configurationError}`);
         if (this.storageBlocked)
             throw new Error(`日志存储不可用，请先清空日志：${this.mutable.persistenceError}`);
-        this.mutable.enabled = true;
-        this.mutable.persistenceError = '';
-        this.mutable.legacyLogsDetected = false;
-        this.persistenceAvailable = true;
-        this.current = {
-            id: sessionId(),
-            startedAt: new Date().toISOString(),
-            endedAt: null,
-            interrupted: false,
-            privacyMode: this.mutable.settings.privacyMode,
-            eventCount: 0,
-            bytes: 0,
-            droppedBytes: 0,
-            chunks: [],
+        if (this.protectedValuesError)
+            throw new Error(this.protectedValuesError);
+        this.mutable.hostFrontendStatus = { phase: 'starting', code: '', message: '', importedCount: 0 };
+        this.notify();
+        let subscribeCancel = null;
+        let tailEntries = [];
+        const initBuffer = [];
+        let realtime = false;
+        let contractFailed = null;
+        const onEntry = entry => {
+            if (realtime && this.mutable.enabled)
+                this.acceptHostEntry(entry);
+            else
+                initBuffer.push(entry);
         };
-        this.index.sessions.push(this.current);
-        this.mutable.currentSessionId = this.current.id;
+        const onContractError = error => {
+            if (realtime)
+                this.degradeHostStream(error);
+            else
+                contractFailed ??= error;
+        };
+        let pendingSession = null;
+        try {
+            this.host.assertFrontendLogsCapability();
+            try {
+                this.mutable.hostConsoleCaptureEnabled = await this.host.getHostConsoleCaptureEnabled();
+                this.mutable.hostConsoleCaptureError = '';
+            }
+            catch (error) {
+                this.mutable.hostConsoleCaptureEnabled = null;
+                this.mutable.hostConsoleCaptureError = errorMessage(error);
+            }
+            subscribeCancel = await this.host.subscribeFrontendLogs(onEntry, onContractError);
+            if (contractFailed)
+                throw contractFailed;
+            if (importHostTail) {
+                tailEntries = await this.host.listFrontendLogs();
+                if (contractFailed)
+                    throw contractFailed;
+            }
+            const session = {
+                id: sessionId(),
+                startedAt: new Date().toISOString(),
+                endedAt: null,
+                interrupted: false,
+                privacyMode: this.mutable.settings.privacyMode,
+                eventCount: 0,
+                bytes: 0,
+                droppedBytes: 0,
+                chunks: [],
+            };
+            pendingSession = session;
+            this.index.sessions.push(session);
+            await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
+            if (contractFailed)
+                throw contractFailed;
+            this.current = session;
+            this.mutable.currentSessionId = session.id;
+            this.mutable.currentEntries = [];
+            this.memoryBytes = 0;
+            this.nextSequence = 1;
+            this.hostIdSet = new Set();
+            this.mutable.enabled = true;
+            this.mutable.persistenceError = '';
+            this.mutable.legacyLogsDetected = false;
+            this.persistenceAvailable = true;
+            this.storageBlocked = false;
+            this.volatileSessions.clear();
+            this.syncSessions();
+            this.record('info', 'system', 'logger', 'session.started', { data: { privacyMode: session.privacyMode, maxBytes: this.mutable.settings.maxBytes } });
+            const merged = this.mergeHostEntries(tailEntries, initBuffer);
+            for (const entry of merged)
+                this.acceptHostEntry(entry);
+            realtime = true;
+            this.hostSubscriptionCancel = subscribeCancel;
+            this.mutable.hostFrontendStatus = {
+                phase: 'active',
+                code: '',
+                message: '',
+                importedCount: merged.length,
+            };
+            this.notify();
+        }
+        catch (error) {
+            this.rollbackStart(subscribeCancel, contractFailed, error, pendingSession);
+            throw error;
+        }
+    }
+    mergeHostEntries(tail, buffer) {
+        const seen = new Set();
+        const merged = [];
+        for (const entry of [...tail, ...buffer]) {
+            if (!seen.has(entry.id)) {
+                seen.add(entry.id);
+                merged.push(entry);
+            }
+        }
+        return merged.sort((left, right) => left.id - right.id);
+    }
+    rollbackStart(subscribeCancel, contractFailed, error, pendingSession = null) {
+        this.mutable.enabled = false;
+        this.hostIdSet = new Set();
+        this.hostSubscriptionCancel = null;
+        this.pending = [];
+        this.pendingBytes = 0;
+        if (subscribeCancel) {
+            try {
+                subscribeCancel();
+            }
+            catch {
+                // 取消订阅失败不改变启动失败结论
+            }
+        }
+        const sessionToRemove = this.current ?? pendingSession;
+        if (sessionToRemove && this.index.sessions.includes(sessionToRemove)) {
+            const index = this.index.sessions.indexOf(sessionToRemove);
+            this.index.sessions.splice(index, 1);
+        }
+        this.current = null;
+        this.mutable.currentSessionId = null;
         this.mutable.currentEntries = [];
         this.memoryBytes = 0;
-        this.nextSequence = 1;
         this.syncSessions();
-        this.record('info', 'system', 'logger', 'session.started', { data: { privacyMode: this.current.privacyMode, maxBytes: this.mutable.settings.maxBytes } });
-        await this.persistIndexSafely();
+        const failed = contractFailed ?? error;
+        this.mutable.hostFrontendStatus = {
+            phase: 'unavailable',
+            code: failed?.code ?? 'HOST_FRONTEND_LOGS_MISSING',
+            message: errorMessage(failed),
+            importedCount: 0,
+        };
+        this.notify();
     }
-    async stop() {
+    acceptHostEntry(entry) {
+        if (this.hostIdSet.has(entry.id))
+            return;
+        this.hostIdSet.add(entry.id);
+        if (REFLUX_PREFIX_PATTERN.test(entry.message))
+            return;
+        if (levelEnabled(entry.level, this.mutable.settings.minimumLevel))
+            this.recordHostEntry(entry);
+    }
+    degradeHostStream(error) {
+        if (this.mutable.hostFrontendStatus.phase === 'degraded')
+            return;
+        const cancel = this.hostSubscriptionCancel;
+        this.hostSubscriptionCancel = null;
+        if (cancel) {
+            try {
+                cancel();
+            }
+            catch {
+                // 取消订阅失败不改变降级结论
+            }
+        }
+        this.mutable.hostFrontendStatus = {
+            phase: 'degraded',
+            code: error?.code ?? '',
+            message: errorMessage(error),
+            importedCount: this.mutable.hostFrontendStatus.importedCount ?? 0,
+        };
+        this.record('error', 'system', 'logger', 'host.stream_contract_failed', {
+            data: { operation: 'host.stream.contract', ...errorKind(error) },
+        });
+        this.notify();
+    }
+    recordHostEntry(entry) {
+        this.recordInternal(entry.level, 'system', 'host-frontend', 'host.frontend_log', {
+            data: {
+                hostEntryId: entry.id,
+                hostTimestampMs: entry.timestampMs,
+                hostLevel: entry.level,
+                messagePresent: entry.message.length > 0,
+            },
+            sensitive: {
+                message: entry.message,
+                ...(entry.target !== undefined ? { target: entry.target } : {}),
+            },
+        }, false);
+    }
+    async _stopInternal() {
         if (!this.mutable.enabled)
             return;
+        const cancel = this.hostSubscriptionCancel;
+        this.hostSubscriptionCancel = null;
+        if (cancel) {
+            try {
+                cancel();
+            }
+            catch {
+                // 取消订阅失败不阻塞会话收尾
+            }
+        }
+        this.mutable.hostFrontendStatus = { phase: 'idle', code: '', message: '', importedCount: 0 };
         this.record('info', 'system', 'logger', 'session.stopping');
         this.mutable.enabled = false;
         this.clearFlushTimer();
-        await this.flush();
-        if (this.current)
-            this.current.endedAt = new Date().toISOString();
-        this.current = null;
-        this.mutable.currentSessionId = null;
-        this.syncSessions();
-        await this.persistIndexSafely();
+        try {
+            await this.flush();
+            await this.flushQueue;
+        }
+        finally {
+            if (this.current)
+                this.current.endedAt = new Date().toISOString();
+            this.current = null;
+            this.mutable.currentSessionId = null;
+            this.mutable.currentEntries = [];
+            this.pending = [];
+            this.pendingBytes = 0;
+            this.memoryBytes = 0;
+            this.hostIdSet = new Set();
+            this.syncSessions();
+            await this.persistIndexSafely();
+        }
+        this.notify();
     }
     async saveSettings(settings) {
+        return this.enqueue(() => this._saveSettingsInternal(settings));
+    }
+    async _saveSettingsInternal(settings) {
         const validated = parseLogSettings(settings);
         const modeChanged = validated.privacyMode !== this.mutable.settings.privacyMode;
         const wasEnabled = this.mutable.enabled;
         if (wasEnabled && modeChanged)
-            await this.stop();
+            await this._stopInternal();
         try {
             await this.host.globalSet(SETTINGS_KEY, validated);
             this.mutable.settings = validated;
@@ -176,51 +450,81 @@ export class ToolkitLogger {
             if (!this.storageBlocked)
                 await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
         }
+        catch (error) {
+            this.record('error', 'system', 'logger', 'settings.save_failed', {
+                data: { operation: 'settings.save', ...errorKind(error) },
+                sensitive: { error },
+            });
+            throw error;
+        }
         finally {
             if (wasEnabled && modeChanged && !this.mutable.enabled && !this.storageBlocked)
-                await this.start();
+                await this._startInternal({ importHostTail: false });
         }
     }
     async resetSettings() {
-        await this.host.globalDelete(SETTINGS_KEY);
-        await this.saveSettings(createDefaultLogSettings());
+        return this.enqueue(async () => {
+            await this.host.globalDelete(SETTINGS_KEY);
+            await this._saveSettingsInternal(createDefaultLogSettings());
+        });
     }
     async clearLogs() {
+        return this.enqueue(() => this._clearLogsInternal());
+    }
+    async _clearLogsInternal() {
         const restart = this.mutable.enabled;
         if (restart)
-            await this.stop();
-        await this.host.storeDeleteTable(LOG_TABLE);
-        this.index = createDefaultLogIndex();
-        this.mutable.currentEntries = [];
-        this.mutable.persistenceError = '';
-        this.mutable.legacyLogsDetected = false;
-        this.persistenceAvailable = true;
-        this.storageBlocked = false;
-        this.volatileSessions.clear();
-        this.syncSessions();
-        await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
+            await this._stopInternal();
+        try {
+            await this.host.storeDeleteTable(LOG_TABLE);
+            this.index = createDefaultLogIndex();
+            this.mutable.currentEntries = [];
+            this.mutable.persistenceError = '';
+            this.mutable.legacyLogsDetected = false;
+            this.persistenceAvailable = true;
+            this.storageBlocked = false;
+            this.volatileSessions.clear();
+            this.syncSessions();
+            await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
+        }
+        catch (error) {
+            this.record('error', 'system', 'logger', 'logs.clear_failed', {
+                data: { operation: 'logs.clear', ...errorKind(error) },
+                sensitive: { error },
+            });
+            throw error;
+        }
         if (restart)
-            await this.start();
+            await this._startInternal({ importHostTail: false });
     }
     async loadSession(id) {
-        const volatile = this.volatileSessions.get(id);
-        if (volatile)
-            return structuredClone(volatile);
-        if (id === this.mutable.currentSessionId && !this.persistenceAvailable)
-            return structuredClone(this.mutable.currentEntries);
-        if (id === this.mutable.currentSessionId)
-            await this.flush();
-        const session = this.index.sessions.find(item => item.id === id);
-        if (!session)
-            return [];
-        const events = [];
-        for (const chunk of session.chunks) {
-            const text = await (await this.host.storeGetBlob(LOG_TABLE, chunk.key)).text();
-            for (const line of text.split('\n'))
-                if (line.trim())
-                    events.push(JSON.parse(line));
+        try {
+            const volatile = this.volatileSessions.get(id);
+            if (volatile)
+                return structuredClone(volatile);
+            if (id === this.mutable.currentSessionId && !this.persistenceAvailable)
+                return structuredClone(this.mutable.currentEntries);
+            if (id === this.mutable.currentSessionId)
+                await this.flush();
+            const session = this.index.sessions.find(item => item.id === id);
+            if (!session)
+                return [];
+            const events = [];
+            for (const chunk of session.chunks) {
+                const text = await (await this.host.storeGetBlob(LOG_TABLE, chunk.key)).text();
+                for (const line of text.split('\n'))
+                    if (line.trim())
+                        events.push(JSON.parse(line));
+            }
+            return events;
         }
-        return events;
+        catch (error) {
+            this.record('error', 'system', 'logger', 'session.load_failed', {
+                data: { operation: 'session.load', ...errorKind(error) },
+                sensitive: { error },
+            });
+            throw error;
+        }
     }
     exportEntries(entries, format) {
         if (format !== 'json' && format !== 'log')
@@ -249,13 +553,34 @@ export class ToolkitLogger {
         return lines.length ? `${lines.join('\n')}\n` : '';
     }
     async refreshHostConsoleCaptureStatus() {
-        this.mutable.hostConsoleCaptureEnabled = await this.host.getHostConsoleCaptureEnabled();
+        try {
+            this.mutable.hostConsoleCaptureEnabled = await this.host.getHostConsoleCaptureEnabled();
+            this.mutable.hostConsoleCaptureError = '';
+        }
+        catch (error) {
+            this.mutable.hostConsoleCaptureEnabled = null;
+            this.mutable.hostConsoleCaptureError = errorMessage(error);
+            this.record('error', 'system', 'logger', 'host.status_refresh_failed', {
+                data: { operation: 'host.status.refresh', ...errorKind(error) },
+                sensitive: { error },
+            });
+        }
         this.notify();
     }
     record(level, featureId, source, event, input = {}) {
+        this.recordInternal(level, featureId, source, event, input, true);
+    }
+    recordInternal(level, featureId, source, event, input, forwardConsole) {
         if (!this.mutable.enabled || !this.current || !levelEnabled(level, this.mutable.settings.minimumLevel))
             return;
-        const payload = projectLogPayload(input.data, input.sensitive, this.mutable.settings.privacyMode === 'full');
+        const full = this.mutable.settings.privacyMode === 'full';
+        const payload = projectLogPayload(input.data, input.sensitive, full);
+        if (this.protectedValues.size > 0) {
+            if (payload.data !== undefined)
+                payload.data = this.redactProtected(payload.data);
+            if (payload.sensitive !== undefined)
+                payload.sensitive = this.redactProtected(payload.sensitive);
+        }
         const bounded = boundLogEvent({
             sequence: this.nextSequence++,
             timestamp: new Date().toISOString(),
@@ -274,7 +599,8 @@ export class ToolkitLogger {
         this.memoryBytes += lineBytes;
         this.trimMemory();
         this.syncSessions();
-        this.forwardConsole(bounded);
+        if (forwardConsole)
+            this.forwardConsole(bounded);
         if (!this.persistenceAvailable)
             return;
         if (this.pendingBytes >= FLUSH_BYTES)

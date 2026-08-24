@@ -1,4 +1,5 @@
 import { ToolkitError } from '../../kernel/errors.js';
+import { sha256Hex } from '../../kernel/hash.js';
 import {
     embedWorldInfoAiConfig,
     parseWorldInfoAiConfig,
@@ -15,11 +16,8 @@ function legacyFallbackKey(worldName) {
 }
 
 export async function worldInfoFallbackKey(worldName) {
-    if (!globalThis.crypto?.subtle)
-        throw new ToolkitError('CRYPTO_UNAVAILABLE', '当前 WebView 不支持生成安全的世界书配置键。');
-    const input = new TextEncoder().encode(String(worldName));
-    const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', input));
-    return `world-${[...digest].map(byte => byte.toString(16).padStart(2, '0')).join('')}`;
+    const digest = await sha256Hex(String(worldName));
+    return `world-${digest}`;
 }
 
 function sameConfig(left, right) {
@@ -68,9 +66,7 @@ export class WorldInfoAiConfigStore {
             const persisted = readEmbeddedWorldInfoAiConfig(fresh);
             if (persisted === undefined || !sameConfig(parseWorldInfoAiConfig(persisted), validated))
                 throw new ToolkitError('WORLD_INFO_EXTENSION_DROPPED', '宿主未完整保留世界书扩展字段。');
-            await this.host.storeDeleteJson(FALLBACK_TABLE, fallbackKey);
-            if (legacyKey)
-                await this.host.storeDeleteJson(FALLBACK_TABLE, legacyKey);
+            await this.cleanupFallback(fallbackKey, legacyKey);
             this.log?.info('config.saved', { data: { backend: 'world-extension' }, sensitive: { worldName } });
             return { data: fresh, config: validated, backend: 'world-extension' };
         }
@@ -82,7 +78,7 @@ export class WorldInfoAiConfigStore {
             try {
                 await this.host.storeSetJson(FALLBACK_TABLE, fallbackKey, validated);
                 if (legacyKey)
-                    await this.host.storeDeleteJson(FALLBACK_TABLE, legacyKey);
+                    await this.cleanupFallback(legacyKey, null);
             }
             catch (fallbackError) {
                 this.log?.error('config.fallback_save_failed', {
@@ -93,6 +89,24 @@ export class WorldInfoAiConfigStore {
             }
             this.log?.info('config.saved', { data: { backend: 'extension-store' }, sensitive: { worldName } });
             return { data, config: validated, backend: 'extension-store' };
+        }
+    }
+
+    async cleanupFallback(...keys) {
+        try {
+            for (const key of keys) {
+                if (key === null || key === undefined)
+                    continue;
+                const existing = await this.host.storeTryGetJson(FALLBACK_TABLE, key);
+                if (existing !== undefined)
+                    await this.host.storeDeleteJson(FALLBACK_TABLE, key);
+            }
+        }
+        catch (error) {
+            this.log?.warn('config.fallback_cleanup_failed', {
+                data: { kind: error instanceof ToolkitError ? error.code : error instanceof Error ? error.name : typeof error },
+                sensitive: { error },
+            });
         }
     }
 }

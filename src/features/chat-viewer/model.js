@@ -53,7 +53,7 @@ export function buildChatViewModel(snapshot) {
         hiddenConversationMessages: 0,
     };
     snapshot.messages.forEach((raw, absoluteIndex) => {
-        const role = classifyMessage(raw, absoluteIndex);
+        const role = classifyMessage(raw, absoluteIndex, { chatKind: snapshot.identity.ref?.kind });
         if (role === 'system') {
             stats.excludedSystemMessages += 1;
             return;
@@ -70,6 +70,7 @@ export function buildChatViewModel(snapshot) {
         items.push({
             conversationIndex,
             absoluteIndex,
+            chatKind: snapshot.identity.ref?.kind,
             role,
             hidden,
             compact: isRecord(raw.extra) && raw.extra.isSmallSys === true,
@@ -147,7 +148,7 @@ export function searchSnippet(text, query, contextLength = SEARCH_CONTEXT_LENGTH
 
 export function matchesMessageTarget(raw, item) {
     try {
-        return classifyMessage(raw, item.absoluteIndex) === item.role
+        return classifyMessage(raw, item.absoluteIndex, { chatKind: item.chatKind }) === item.role
             && sameComparable(comparableTarget(raw, item.role), item.target);
     }
     catch {
