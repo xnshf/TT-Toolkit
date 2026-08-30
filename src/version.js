@@ -1,1 +1,1 @@
-export const TOOLKIT_VERSION = '0.5.0';
+export const TOOLKIT_VERSION = '0.6.0';
