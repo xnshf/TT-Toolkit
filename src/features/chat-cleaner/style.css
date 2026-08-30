@@ -21,4 +21,5 @@
   .rule-row { grid-template-columns: auto 1fr auto auto auto; }
   .rule-row input:not([type=checkbox]) { grid-column: 2/6; }
   .rule-row .risk { grid-column: 2/6; }
+  .rule-row button { min-width: 36px; min-height: 36px; }
 }

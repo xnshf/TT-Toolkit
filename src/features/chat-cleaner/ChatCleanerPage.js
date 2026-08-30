@@ -1,6 +1,7 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
 import { errorMessage } from '../../kernel/errors.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
+import { confirmDanger } from '../../ui/confirm.js';
 
 const PAGE_SIZE = 20;
 const TABS = [['manual', '手动清洗'], ['rules', '规则设置'], ['auto', '自动清洗'], ['status', '运行状态']];
@@ -47,7 +48,6 @@ export function mountChatCleanerPage(target, props) {
         expanded: null,
         draft: structuredClone(runtime.state.settings),
         previewKeep: null,
-        confirmMode: null,
     };
     let disposed = false;
     const notices = createNoticeController(() => render());
@@ -138,8 +138,20 @@ export function mountChatCleanerPage(target, props) {
             section.append(h('div', { className: 'feature-action-bar' },
                 h('span', { text: `本次将修改 ${plan.stats.changedMessages} 个楼层；提交后无法由插件撤销。` }),
                 actionButton('永久提交清洗', () => {
-                    view.confirmMode = hasEmpty ? 'empty' : 'normal';
-                    render();
+                    void run(async () => {
+                        const confirmed = await confirmDanger(target.ownerDocument, {
+                            title: hasEmpty ? '确认保存空 swipe' : '确认永久清洗',
+                            message: hasEmpty
+                                ? '本批次包含将被保存为空字符串的候选。插件不提供撤销，确定继续吗？'
+                                : '将永久写回当前聊天。插件不提供备份或撤销，确定继续吗？',
+                            confirmLabel: '确认永久提交',
+                        });
+                        if (!confirmed)
+                            return;
+                        await runtime.commitManual(hasEmpty);
+                        view.previewKeep = null;
+                        notices.show(runtime.state.status, 'success');
+                    });
                 }, { className: 'danger-button', disabled: stale || runtime.state.busy || plan.changes.length === 0 }),
             ));
             view.page = Math.min(view.page, pageCount - 1);
@@ -265,24 +277,6 @@ export function mountChatCleanerPage(target, props) {
         ));
     }
 
-    function renderDialog(root) {
-        if (!view.confirmMode)
-            return;
-        const empty = view.confirmMode === 'empty';
-        root.append(h('dialog', { open: true, className: 'ttk-confirm', attrs: { 'data-tt-mobile-surface': 'fullscreen-window' } },
-            h('h3', { text: empty ? '确认保存空 swipe' : '确认永久清洗' }),
-            h('p', { text: empty ? '本批次包含将被保存为空字符串的候选。插件不提供撤销，确定继续吗？' : '将永久写回当前聊天。插件不提供备份或撤销，确定继续吗？' }),
-            h('div', {},
-                actionButton('取消', () => { view.confirmMode = null; render(); }),
-                actionButton('确认永久提交', () => {
-                    const allowEmpty = view.confirmMode === 'empty';
-                    view.confirmMode = null;
-                    void run(async () => { await runtime.commitManual(allowEmpty); view.previewKeep = null; notices.show(runtime.state.status, 'success'); });
-                }, { className: 'danger-button' }),
-            ),
-        ));
-    }
-
     function render() {
         if (disposed)
             return;
@@ -296,7 +290,6 @@ export function mountChatCleanerPage(target, props) {
             renderAuto(root);
         else
             renderStatus(root);
-        renderDialog(root);
         target.replaceChildren(root);
     }
 

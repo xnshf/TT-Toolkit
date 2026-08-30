@@ -28,4 +28,5 @@
   .exporter-role-heading,.exporter-rule-bank>header { align-items: stretch; flex-direction: column; }
   .exporter-rule-row { grid-template-columns: auto 1fr auto auto auto; }
   .exporter-rule-row input:nth-child(3) { grid-column: 2/6; }
+  .exporter-rule-row button { min-width: 36px; min-height: 36px; }
 }

@@ -1,5 +1,6 @@
 import { errorMessage } from '../../kernel/errors.js';
 import { actionButton, callout, h } from '../../ui/dom.js';
+import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 import { saveChatDocument } from './file.js';
 
@@ -76,14 +77,12 @@ export function mountChatExporterPage(target, props) {
         draft: structuredClone(runtime.state.settings),
         dirty: false,
         page: 0,
-        confirmWarnings: false,
     };
     let disposed = false;
     const notices = createNoticeController(() => render());
 
     function markDirty() {
         view.dirty = true;
-        view.confirmWarnings = false;
     }
 
     function adoptModel(model, reset = false) {
@@ -91,7 +90,6 @@ export function mountChatExporterPage(target, props) {
             view.rangeStart = model.items.length ? '1' : '';
             view.rangeEnd = model.items.length ? String(model.items.length) : '';
             view.rangeIdentity = model.identity.stableId;
-            view.confirmWarnings = false;
         }
     }
 
@@ -212,7 +210,6 @@ export function mountChatExporterPage(target, props) {
                         view.draft = structuredClone(runtime.state.settings);
                         await runtime.preview(Number(view.rangeStart), Number(view.rangeEnd));
                         view.dirty = false;
-                        view.confirmWarnings = false;
                         view.page = 0;
                     });
                 }, { className: 'primary', disabled: runtime.state.busy || !view.enabled || !model?.items.length }),
@@ -232,12 +229,19 @@ export function mountChatExporterPage(target, props) {
         root.append(h('div', { className: 'feature-action-bar' },
             h('span', { text: `已预览 ${plan.stats.exportedMessages} 条消息；保存不会修改聊天。` }),
             actionButton('保存文档', () => {
-                if (plan.requiresConfirmation && !view.confirmWarnings) {
-                    view.confirmWarnings = true;
-                    render();
-                    return;
-                }
-                void run(() => download(plan.requiresConfirmation));
+                void run(async () => {
+                    if (plan.requiresConfirmation) {
+                        const confirmed = await confirmDanger(target.ownerDocument, {
+                            title: '确认跳过有风险的消息',
+                            message: `预览包含 ${plan.stats.warningCount} 条警告，将跳过 ${plan.stats.skippedMessages} 条消息。导出不会修改聊天，确定按预览结果保存吗？`,
+                            confirmLabel: '确认并保存',
+                            confirmClass: 'primary',
+                        });
+                        if (!confirmed)
+                            return;
+                    }
+                    await download(plan.requiresConfirmation);
+                });
             }, { className: 'primary', disabled: runtime.state.busy || runtime.state.stale || view.dirty }),
         ));
         const pageCount = Math.max(1, Math.ceil(plan.entries.length / PAGE_SIZE));
@@ -327,23 +331,6 @@ export function mountChatExporterPage(target, props) {
         root.append(section);
     }
 
-    function renderConfirm(root) {
-        const plan = runtime.state.currentPlan;
-        if (!view.confirmWarnings || !plan)
-            return;
-        root.append(h('dialog', { open: true, className: 'ttk-confirm', attrs: { 'data-tt-mobile-surface': 'fullscreen-window' } },
-            h('h3', { text: '确认跳过有风险的消息' }),
-            h('p', { text: `预览包含 ${plan.stats.warningCount} 条警告，将跳过 ${plan.stats.skippedMessages} 条消息。导出不会修改聊天，确定按预览结果保存吗？` }),
-            h('div', {},
-                actionButton('取消', () => { view.confirmWarnings = false; render(); }),
-                actionButton('确认并保存', () => {
-                    view.confirmWarnings = false;
-                    void run(() => download(true));
-                }, { className: 'primary' }),
-            ),
-        ));
-    }
-
     function render() {
         if (disposed)
             return;
@@ -353,7 +340,6 @@ export function mountChatExporterPage(target, props) {
             renderRules(root);
         else if (view.enabled)
             renderExport(root);
-        renderConfirm(root);
         target.replaceChildren(root);
     }
 

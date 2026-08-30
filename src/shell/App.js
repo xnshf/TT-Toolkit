@@ -1,4 +1,4 @@
-import { actionButton, h } from '../ui/dom.js';
+import { actionButton, bindScrollFade, h } from '../ui/dom.js';
 import { TOOLKIT_VERSION } from '../version.js';
 
 function taxonomy(features) {
@@ -25,6 +25,8 @@ export class ToolkitApp {
     route;
     renderToken = 0;
     disposeFeature = null;
+    updateCategoryFade = null;
+    updateFeatureFade = null;
 
     constructor(target, props) {
         this.target = target;
@@ -38,9 +40,9 @@ export class ToolkitApp {
         const titlebar = h('header', { className: 'workbench-titlebar', attrs: { 'data-drag-handle': '' } },
             h('div', {}, h('b', { text: 'TT-Toolkit' }), h('span', { text: TOOLKIT_VERSION })),
             h('div', { className: 'title-actions' },
-                actionButton('◇', this.props.cycleSize, { title: '切换尺寸档位', ariaLabel: '切换尺寸档位' }),
-                actionButton('↺', this.props.resetLayout, { title: '重置界面布局', ariaLabel: '重置界面布局' }),
-                actionButton('×', this.props.close, { ariaLabel: '关闭工作台' }),
+                actionButton('◇', this.props.cycleSize, { className: 'layout-only', title: '切换尺寸档位', ariaLabel: '切换尺寸档位' }),
+                actionButton('↺', this.props.resetLayout, { className: 'layout-only', title: '重置界面布局', ariaLabel: '重置界面布局' }),
+                actionButton('×', this.props.close, { className: 'close-button', ariaLabel: '关闭工作台' }),
             ),
         );
         this.categoryNavigation = h('nav', { className: 'category-navigation', attrs: { 'aria-label': '功能大类' } });
@@ -53,11 +55,33 @@ export class ToolkitApp {
                 this.featureNavigation,
                 this.main,
             ),
+            h('footer', { className: 'workbench-footer' },
+                actionButton('关闭工作台', this.props.close, { className: 'workbench-close' }),
+            ),
         );
         this.target.replaceChildren(this.workbench);
+        this.updateCategoryFade = bindScrollFade(this.categoryNavigation);
+        this.updateFeatureFade = bindScrollFade(this.featureNavigation);
         this.renderNavigation();
         void this.renderMain();
+        this.bindFrameDismiss();
         return this;
+    }
+
+    // 桌面窗口四周露出遮罩:点击工作台外或按 Esc 关闭;确认框打开时 Esc 交给 dialog。
+    bindFrameDismiss() {
+        const doc = this.target.ownerDocument;
+        this.onKeyDown = event => {
+            if (event.key !== 'Escape' || doc.querySelector('dialog[open]'))
+                return;
+            this.props.close();
+        };
+        this.onClickOutside = event => {
+            if (event.target === this.target)
+                this.props.close();
+        };
+        doc.addEventListener('keydown', this.onKeyDown);
+        this.target.addEventListener('click', this.onClickOutside);
     }
 
     async navigate(route) {
@@ -109,6 +133,8 @@ export class ToolkitApp {
             ...(activeCategory ? [h('h2', { text: '功能' })] : []),
             ...featureButtons,
         );
+        this.updateCategoryFade?.();
+        this.updateFeatureFade?.();
     }
 
     async renderMain() {
@@ -170,6 +196,9 @@ export class ToolkitApp {
     unmount() {
         this.renderToken += 1;
         this.disposeFeature?.();
+        const doc = this.target.ownerDocument;
+        doc.removeEventListener('keydown', this.onKeyDown);
+        this.target.removeEventListener('click', this.onClickOutside);
         this.target.replaceChildren();
     }
 }

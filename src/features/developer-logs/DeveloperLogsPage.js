@@ -1,6 +1,7 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
 import { errorMessage } from '../../kernel/errors.js';
 import { MIB } from '../../kernel/logging/schema.js';
+import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 
 const PAGE_SIZE = 100;
@@ -489,9 +490,14 @@ export function mountDeveloperLogsPage(target, props) {
                 void run(() => exportCopy(records, view.exportFormat, 'copy-filtered'), { progress: `正在复制 ${view.exportFormat.toUpperCase()}…` });
             }, { className: 'secondary' }),
             actionButton('清空日志', () => {
-                if (!target.ownerDocument.defaultView.confirm('将永久删除 TT-Toolkit 的全部日志会话，确定继续吗？'))
-                    return;
                 void run(async () => {
+                    const confirmed = await confirmDanger(target.ownerDocument, {
+                        title: '清空日志',
+                        message: '将永久删除 TT-Toolkit 的全部日志会话，确定继续吗？',
+                        confirmLabel: '确认清空',
+                    });
+                    if (!confirmed)
+                        return;
                     await runtime.clearLogs();
                     view.selectedSession = runtime.state.currentSessionId ?? '';
                     await reloadSession();

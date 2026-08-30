@@ -36,6 +36,21 @@ export function actionButton(text, onClick, options = {}) {
     return h('button', { type: 'button', text, on: { click: onClick }, ...options });
 }
 
+// 横向滚动容器两端的渐隐提示:滚动未到端点时对应侧出现渐隐。
+// 返回 update 以便内容替换(如导航重渲染)后重新判定,窗口尺寸变化由 ResizeObserver 覆盖。
+export function bindScrollFade(element) {
+    const update = () => {
+        const max = element.scrollWidth - element.clientWidth;
+        element.classList.toggle('fade-left', element.scrollLeft > 1);
+        element.classList.toggle('fade-right', element.scrollLeft < max - 1);
+    };
+    element.addEventListener('scroll', update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    update();
+    return update;
+}
+
 export function callout(text, kind = '') {
     return h('div', { className: `callout${kind ? ` ${kind}` : ''}`, text });
 }

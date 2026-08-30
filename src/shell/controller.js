@@ -5,20 +5,32 @@ import { mountToolkitApp } from '../ui/main.js';
 const STYLE_URL = '/scripts/extensions/third-party/TT-Toolkit/style.css';
 const SETTINGS_KEY = 'shell-settings-v1';
 const TOP_LAYER = '2147483647';
+const LAUNCHER_SIZE = 52;
+
+const mobileQuery = matchMedia('(max-width: 720px)');
 
 function mobile() {
-  return matchMedia('(max-width: 720px)').matches;
+  return mobileQuery.matches;
 }
 
-function clampPoint(point, width, height) {
-  const margin = 8;
+function clampPoint(point, width, height, margin = 8, bottomMargin = margin) {
   return {
     x: Math.min(Math.max(margin, point.x), Math.max(margin, innerWidth - width - margin)),
-    y: Math.min(Math.max(margin, point.y), Math.max(margin, innerHeight - height - margin)),
+    y: Math.min(Math.max(margin, point.y), Math.max(margin, innerHeight - height - bottomMargin)),
   };
 }
 
-export function draggable(target, handle, read, write, onClick) {
+// 安全区数值只能从顶层文档可靠测得;iframe 内 env() 不可用,由宿主注入 CSS 变量。
+function measureSafeBottom() {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;left:0;bottom:0;height:0;padding-bottom:env(safe-area-inset-bottom,0px)';
+  document.documentElement.append(probe);
+  const value = parseFloat(getComputedStyle(probe).paddingBottom) || 0;
+  probe.remove();
+  return value;
+}
+
+export function draggable(target, handle, read, write, { onClick, onDragEnd, sheet, onSheet } = {}) {
   let active = null;
   const down = event => {
     if (event.button !== 0) return;
@@ -32,6 +44,7 @@ export function draggable(target, handle, read, write, onClick) {
       startY: event.clientY,
       origin: read(),
       moved: false,
+      sheetMode: Boolean(sheet?.()),
     };
     handle.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -41,6 +54,11 @@ export function draggable(target, handle, read, write, onClick) {
     const dx = event.clientX - active.startX;
     const dy = event.clientY - active.startY;
     if (Math.hypot(dx, dy) > 5) active.moved = true;
+    // 下拉模式:窗口跟手下移预览关闭意图,不受 clamp 限制。
+    if (active.sheetMode) {
+      target.style.transform = `translateY(${Math.max(0, dy)}px)`;
+      return;
+    }
     const next = clampPoint(
       { x: active.origin.x + dx, y: active.origin.y + dy },
       target.offsetWidth,
@@ -52,10 +70,21 @@ export function draggable(target, handle, read, write, onClick) {
   const up = event => {
     if (!active || event.pointerId !== active.id) return;
     const moved = active.moved;
+    const sheetMode = active.sheetMode;
+    const gesture = {
+      dx: event.clientX - active.startX,
+      dy: event.clientY - active.startY,
+    };
     active = null;
+    if (sheetMode) {
+      target.style.transform = '';
+      if (gesture.dy > 96) onSheet?.();
+      return;
+    }
     const rect = target.getBoundingClientRect();
     write({ x: rect.left, y: rect.top });
     if (!moved) onClick?.();
+    else onDragEnd?.(gesture);
   };
   handle.addEventListener('pointerdown', down);
   handle.addEventListener('pointermove', move);
@@ -86,9 +115,12 @@ export class ShellController {
   settings;
   enabled = {};
   launcher;
+  launcherButton;
   overlay;
   iframe;
   workspace;
+  safeBottom = 0;
+  handleViewportChange = null;
   disposeLauncherDrag = null;
   disposeWorkspaceDrag = null;
   log;
@@ -101,6 +133,9 @@ export class ShellController {
 
   async initialize() {
     this.settings = parseShellSettings(await this.host.globalGet(SETTINGS_KEY));
+    this.safeBottom = measureSafeBottom();
+    this.handleViewportChange = () => this.syncViewport();
+    window.addEventListener('resize', this.handleViewportChange);
     for (const feature of this.features) {
       this.enabled[feature.id] = this.settings.enabledFeatures[feature.id] ?? feature.defaultEnabled;
     }
@@ -158,9 +193,8 @@ export class ShellController {
     root.id = 'tt-toolkit-launcher-root';
     root.setAttribute('data-tt-mobile-surface', 'free-window');
     forceTopLayer(root);
-    const point = (mobile() ? this.settings.launcher.mobile : this.settings.launcher.desktop)
-      ?? { x: 18, y: Math.max(80, innerHeight * 0.55) };
-    const safe = clampPoint(point, 52, 52);
+    const point = this.launcherPoint();
+    const safe = clampPoint(point, LAUNCHER_SIZE, LAUNCHER_SIZE, 8, 8 + this.safeBottom);
     root.style.setProperty('left', `${safe.x}px`, 'important');
     root.style.setProperty('top', `${safe.y}px`, 'important');
     const shadow = root.attachShadow({ mode: 'open' });
@@ -177,6 +211,7 @@ export class ShellController {
     shadow.append(button);
     document.documentElement.append(root);
     this.launcher = root;
+    this.launcherButton = button;
     this.disposeLauncherDrag = draggable(
       root,
       button,
@@ -186,8 +221,39 @@ export class ShellController {
         else this.settings.launcher.desktop = pointValue;
         void this.persist();
       },
-      () => this.toggleWorkbench(),
+      { onClick: () => this.toggleWorkbench() },
     );
+  }
+
+  launcherPoint() {
+    return (mobile() ? this.settings.launcher.mobile : this.settings.launcher.desktop)
+      ?? { x: 18, y: Math.max(80, innerHeight * 0.55) };
+  }
+
+  // 视口变化(旋转、分屏、跨断点):重测安全区,重新约束悬浮球与工作台。
+  syncViewport() {
+    this.safeBottom = measureSafeBottom();
+    this.injectSafeArea();
+    const safe = clampPoint(this.launcherPoint(), LAUNCHER_SIZE, LAUNCHER_SIZE, 8, 8 + this.safeBottom);
+    this.launcher.style.setProperty('left', `${safe.x}px`, 'important');
+    this.launcher.style.setProperty('top', `${safe.y}px`, 'important');
+    if (!this.workspace)
+      return;
+    this.applyWorkspaceSize();
+    if (this.overlay.style.display === 'none')
+      return;
+    const point = clampPoint(
+      this.settings.workspace.position ?? { x: (innerWidth - this.workspace.offsetWidth) / 2, y: (innerHeight - this.workspace.offsetHeight) / 2 },
+      this.workspace.offsetWidth,
+      this.workspace.offsetHeight,
+    );
+    this.workspace.style.left = `${point.x}px`;
+    this.workspace.style.top = `${point.y}px`;
+  }
+
+  injectSafeArea() {
+    const root = this.iframe?.contentDocument?.documentElement;
+    root?.style.setProperty('--ttk-safe-bottom', `${this.safeBottom}px`);
   }
 
   async mountWorkbench() {
@@ -239,6 +305,7 @@ export class ShellController {
     this.workspace = frameDocument.querySelector('.workbench');
     if (!this.workspace) throw new Error('工具箱工作台挂载失败');
     this.workspace.style.position = 'fixed';
+    this.injectSafeArea();
     this.applyWorkspaceSize();
     const handle = frameDocument.querySelector('[data-drag-handle]');
     if (!handle) throw new Error('工具箱拖动手柄不存在');
@@ -254,6 +321,11 @@ export class ShellController {
       pointValue => {
         this.settings.workspace.position = pointValue;
         void this.persist();
+      },
+      {
+        // 移动端近全屏窗口几乎没有移动余量:标题栏下拉跟手预览,明显下拉即关闭。
+        sheet: () => mobile(),
+        onSheet: () => this.closeWorkbench(),
       },
     );
   }
@@ -286,23 +358,24 @@ export class ShellController {
   }
 
   openWorkbench() {
-    if (mobile()) {
-      this.workspace.style.left = '0px';
-      this.workspace.style.top = '0px';
-    } else {
-      const point = clampPoint(
-        this.settings.workspace.position ?? { x: (innerWidth - 900) / 2, y: (innerHeight - 680) / 2 },
-        this.workspace.offsetWidth || 900,
-        this.workspace.offsetHeight || 680,
-      );
-      this.workspace.style.left = `${point.x}px`;
-      this.workspace.style.top = `${point.y}px`;
-    }
+    // 移动端为近全屏悬浮窗口,与桌面共用记忆位置;clamp 保证不出视口。
+    const point = clampPoint(
+      this.settings.workspace.position ?? {
+        x: (innerWidth - (this.workspace.offsetWidth || 900)) / 2,
+        y: (innerHeight - (this.workspace.offsetHeight || 680)) / 2,
+      },
+      this.workspace.offsetWidth || 900,
+      this.workspace.offsetHeight || 680,
+    );
+    this.workspace.style.left = `${point.x}px`;
+    this.workspace.style.top = `${point.y}px`;
     this.overlay.style.setProperty('display', 'block', 'important');
+    this.iframe?.contentWindow?.focus();
   }
 
   closeWorkbench() {
     this.overlay.style.setProperty('display', 'none', 'important');
+    this.launcherButton?.focus({ preventScroll: true });
   }
 
   applyWorkspaceSize() {
@@ -335,8 +408,9 @@ export class ShellController {
   resetLayout() {
     this.settings.launcher = { desktop: null, mobile: null };
     this.settings.workspace = { position: null, size: 'standard' };
-    this.launcher.style.setProperty('left', '18px', 'important');
-    this.launcher.style.setProperty('top', `${Math.max(80, innerHeight * 0.55)}px`, 'important');
+    const safe = clampPoint(this.launcherPoint(), LAUNCHER_SIZE, LAUNCHER_SIZE, 8, 8 + this.safeBottom);
+    this.launcher.style.setProperty('left', `${safe.x}px`, 'important');
+    this.launcher.style.setProperty('top', `${safe.y}px`, 'important');
     this.applyWorkspaceSize();
     this.workspace.style.left = `${Math.max(12, (innerWidth - this.workspace.offsetWidth) / 2)}px`;
     this.workspace.style.top = `${Math.max(12, (innerHeight - this.workspace.offsetHeight) / 2)}px`;
