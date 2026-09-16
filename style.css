@@ -2,6 +2,7 @@
 @import './src/features/chat-cleaner/style.css';
 @import './src/features/chat-viewer/style.css';
 @import './src/features/chat-exporter/style.css';
+@import './src/features/prompt-viewer/style.css';
 @import './src/features/developer-logs/style.css';
 @import './src/features/model-settings/style.css';
 @import './src/features/world-info-ai/style.css';

@@ -436,7 +436,7 @@ export function mountPromptConflictPage(target, props) {
         const root = h('section', { className: 'feature-page pc-page' },
             h('header', { className: 'feature-header' },
                 h('div', {},
-                    h('p', { className: 'eyebrow', text: '世界书' }),
+                    h('p', { className: 'eyebrow', text: '提示词' }),
                     h('h2', { text: '冲突检测' }),
                     h('p', { text: '对照当前预设与挂载世界书中的常驻指令，并管理当前聊天的世界书屏蔽。' }),
                 ),

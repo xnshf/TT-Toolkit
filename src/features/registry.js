@@ -47,8 +47,17 @@ export const featureDefinitions = [{
         order: 30,
         load: async (context) => (await import('./chat-exporter/index.js')).createChatExporterFeature(context),
     }, {
+        id: 'prompt-viewer',
+        category: { id: 'prompt', label: '提示词', order: 20 },
+        label: '查看',
+        description: '逐条查看最近一轮实际发送的提示词，并预测给定输入会组装成什么提示词。',
+        icon: '🔬',
+        order: 10,
+        defaultEnabled: false,
+        load: async (context) => (await import('./prompt-viewer/index.js')).createPromptViewerFeature(context),
+    }, {
         id: 'world-info-ai',
-        category: { id: 'world-info', label: '世界书', order: 20 },
+        category: { id: 'world-info', label: '世界书', order: 30 },
         label: 'AI 激活',
         description: '由独立语义描述决定世界书条目是否在本轮激活。',
         icon: '🧭',
@@ -56,7 +65,7 @@ export const featureDefinitions = [{
         load: async (context) => (await import('./world-info-ai/index.js')).createWorldInfoAiFeature(context),
     }, {
         id: 'prompt-conflict',
-        category: { id: 'world-info', label: '世界书', order: 20 },
+        category: { id: 'prompt', label: '提示词', order: 20 },
         label: '冲突检测',
         description: '对照当前预设与挂载世界书中的常驻指令，并管理当前聊天的世界书屏蔽。',
         icon: '⚖️',
