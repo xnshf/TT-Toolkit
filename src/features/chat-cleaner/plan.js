@@ -1,5 +1,5 @@
 import { ToolkitError } from '../../kernel/errors.js';
-import { classifyMessage, hasAssistantProvenance } from '../../kernel/chat-messages.js';
+import { classifyMessage } from '../../kernel/chat-messages.js';
 import { isRecord, parseProgress, parseSettings } from './schema.js';
 import { cleanWithRules, rulesFingerprint } from './rules.js';
 
@@ -208,7 +208,7 @@ export function buildOperationPlan(snapshot, settingsInput, options) {
         compactEligibleMessages: 0,
     };
     snapshot.messages.forEach((message, index) => {
-        const role = classifyMessage(message, index, { chatKind: snapshot.identity.ref?.kind });
+        const role = classifyMessage(message, index);
         rolesByIndex[index] = role;
         if (role === 'assistant')
             assistantIndexes.push(index);
@@ -310,4 +310,4 @@ export function buildOperationPlan(snapshot, settingsInput, options) {
         nextProgress: nextProgress(snapshot.identity.stableId, fingerprint, assistantBoundary, userBoundary, new Date().toISOString()),
     };
 }
-export const cleanerInternals = { classifyMessage, hasAssistantProvenance, reasoningSnapshot };
+export const cleanerInternals = { classifyMessage, reasoningSnapshot };

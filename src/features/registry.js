@@ -56,6 +56,15 @@ export const featureDefinitions = [{
         defaultEnabled: false,
         load: async (context) => (await import('./prompt-viewer/index.js')).createPromptViewerFeature(context),
     }, {
+        id: 'world-info-editor',
+        category: { id: 'world-info', label: '世界书', order: 30 },
+        label: '世界书管理',
+        description: '查看、检索并编辑世界书条目设定。',
+        icon: '📚',
+        order: 5,
+        defaultEnabled: true,
+        load: async (context) => (await import('./world-info-editor/index.js')).createWorldInfoEditorFeature(context),
+    }, {
         id: 'world-info-ai',
         category: { id: 'world-info', label: '世界书', order: 30 },
         label: 'AI 激活',

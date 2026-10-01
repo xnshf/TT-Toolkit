@@ -46,7 +46,7 @@ function stats(model) {
     const values = [
         ['对话楼层', model.stats.conversationMessages],
         ['原始消息', model.stats.totalMessages],
-        ['system 排除', model.stats.excludedSystemMessages],
+        ['明确 system 排除', model.stats.excludedSystemMessages],
         ['tool 排除', model.stats.excludedToolMessages],
         ['隐藏对话', model.stats.hiddenConversationMessages],
     ];

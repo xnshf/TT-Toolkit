@@ -48,7 +48,7 @@ export function projectConversationSnapshot(snapshot) {
         hiddenConversationMessages: 0,
     };
     snapshot.messages.forEach((raw, absoluteIndex) => {
-        const role = classifyMessage(raw, absoluteIndex, { chatKind: snapshot.identity.ref?.kind });
+        const role = classifyMessage(raw, absoluteIndex);
         if (role === 'system') {
             stats.excludedSystemMessages += 1;
             return;
@@ -83,7 +83,7 @@ export function projectConversationSnapshot(snapshot) {
 
 export function matchesProjectedMessageTarget(raw, item) {
     try {
-        return classifyMessage(raw, item.absoluteIndex, { chatKind: item.chatKind }) === item.role
+        return classifyMessage(raw, item.absoluteIndex) === item.role
             && sameComparable(comparableTarget(raw, item.role), item.target);
     }
     catch {

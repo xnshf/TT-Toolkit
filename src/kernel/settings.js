@@ -2,7 +2,7 @@ import { ToolkitError } from './errors.js';
 export function defaultShellSettings() {
     return {
         schemaVersion: 1,
-        enabledFeatures: { 'developer-logs': false, 'model-settings': true, 'chat-cleaner': false, 'chat-exporter': false, 'prompt-viewer': false, 'world-info-ai': false, 'prompt-conflict': false },
+        enabledFeatures: { 'developer-logs': false, 'model-settings': true, 'chat-cleaner': false, 'chat-exporter': false, 'prompt-viewer': false, 'world-info-ai': false, 'world-info-editor': true, 'prompt-conflict': false },
         lastRoute: 'overview',
         launcher: { desktop: null, mobile: null },
         workspace: { position: null, size: 'standard' },

@@ -114,7 +114,7 @@ export function mountChatCleanerPage(target, props) {
             section.append(h('div', { className: 'stats-grid' }, [
                 ['历史楼层', plan.stats.totalMessages],
                 ['可处理楼层', plan.stats.eligibleMessages],
-                ['system 排除', plan.stats.excludedSystemMessages],
+                ['明确 system 排除', plan.stats.excludedSystemMessages],
                 ['tool 排除', plan.stats.excludedToolMessages],
                 ['隐藏纳入', plan.stats.hiddenEligibleMessages],
                 ['紧凑纳入', plan.stats.compactEligibleMessages],

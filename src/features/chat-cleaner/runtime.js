@@ -1,5 +1,5 @@
 import { ToolkitError, errorKind, errorMessage } from '../../kernel/errors.js';
-import { buildOperationPlan } from './plan.js';
+import { buildOperationPlan, classifyMessage } from './plan.js';
 import { createDefaultProgress, createDefaultSettings, parseProgress, parseSettings } from './schema.js';
 import { commitOperation } from './transaction.js';
 const SETTINGS_KEY = 'chat-cleaner-settings-v1';
@@ -130,7 +130,7 @@ export class ChatCleanerRuntime {
             const progress = await this.loadProgress();
             const plan = buildOperationPlan(snapshot, this.mutable.settings, { mode: 'manual', keep, progress });
             this.mutable.currentPlan = plan;
-            this.mutable.status = `预览完成：共 ${plan.stats.totalMessages} 层，排除 system ${plan.stats.excludedSystemMessages} 层、tool ${plan.stats.excludedToolMessages} 层，扫描 ${plan.stats.scannedMessages} 层，计划修改 ${plan.stats.changedMessages} 层。`;
+            this.mutable.status = `预览完成：共 ${plan.stats.totalMessages} 层，排除明确 system ${plan.stats.excludedSystemMessages} 层、tool ${plan.stats.excludedToolMessages} 层，扫描 ${plan.stats.scannedMessages} 层，计划修改 ${plan.stats.changedMessages} 层。`;
             this.log.info('manual.preview_created', { data: { chatAlias: this.host.chatAlias(plan.identity.stableId), keep, ...plan.stats, warningCount: plan.warnings.length }, sensitive: { chatIdentity: plan.identity, changes: plan.changes } });
             return plan;
         });
@@ -173,7 +173,7 @@ export class ChatCleanerRuntime {
             // TauriTavern 在消息入列后才于 hideStopButton() 发出 GENERATION_ENDED，负载是 chat.length
             // （比新消息索引大 1）；legacy 契约则约定为“最后一条消息的索引”。两种语义都落到同一目标。
             const raw = snapshot.messages[messageIndex] ?? snapshot.messages[messageIndex - 1];
-            if (!raw || raw.is_user === true || raw.is_system === true) {
+            if (!raw || classifyMessage(raw, messageIndex) !== 'assistant') {
                 this.log.debug('auto.skipped', { data: { messageIndex } });
                 return;
             }

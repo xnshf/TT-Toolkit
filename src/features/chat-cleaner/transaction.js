@@ -36,10 +36,10 @@ function validatePlan(chat, plan) {
             throw new ToolkitError('COMMIT_CONFLICT', '提交时目标楼层已不存在', { messageIndex: change.messageIndex });
         let currentRole;
         try {
-            currentRole = classifyMessage(raw, change.messageIndex, { chatKind: plan.identity.ref?.kind });
+            currentRole = classifyMessage(raw, change.messageIndex);
         }
         catch (error) {
-            throw new ToolkitError('COMMIT_CONFLICT', '预览后目标楼层的消息类型已无法可靠判断', {
+            throw new ToolkitError('COMMIT_CONFLICT', '预览后目标楼层的消息结构无效', {
                 messageIndex: change.messageIndex,
                 cause: error instanceof ToolkitError ? error.code : error instanceof Error ? error.name : typeof error,
             });

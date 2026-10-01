@@ -22,7 +22,7 @@ function statsGrid(plan) {
     const values = [
         ['历史楼层', plan.projectionStats.totalMessages],
         ['对话楼层', plan.projectionStats.conversationMessages],
-        ['system 排除', plan.projectionStats.excludedSystemMessages],
+        ['明确 system 排除', plan.projectionStats.excludedSystemMessages],
         ['tool 排除', plan.projectionStats.excludedToolMessages],
         ['范围内', plan.stats.rangedMessages],
         ['角色过滤后', plan.stats.roleFilteredMessages],
