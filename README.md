@@ -2,7 +2,7 @@
 
 TT-Toolkit 是一个只面向 [TauriTavern](https://github.com/Darkatse/TauriTavern) 的前端工具箱插件，用来集中处理聊天等数据域的辅助功能。
 
-当前版本：`0.7.0`
+当前版本：`0.7.1`
 
 ## 功能
 
