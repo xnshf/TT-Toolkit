@@ -1,5 +1,6 @@
 import { matchesProjectedMessageTarget, projectConversationSnapshot } from '../../kernel/chat-projection.js';
 import { ToolkitError } from '../../kernel/errors.js';
+import { valueType } from '../../kernel/chat-diagnostics.js';
 
 export const CHAT_VIEW_PAGE_SIZE = 20;
 export const RANGE_PREVIEW_LENGTH = 300;
@@ -16,16 +17,16 @@ export function defaultChatRange(model) {
 
 export function selectChatRange(model, start, end) {
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end > model.items.length) {
-        throw new ToolkitError('INVALID_RANGE', `楼层范围必须满足 1 ≤ 起始楼层 ≤ 截止楼层 ≤ ${model.items.length}`, { start, end });
+        throw new ToolkitError('INVALID_RANGE', `楼层范围必须满足 1 ≤ 起始楼层 ≤ 截止楼层 ≤ ${model.items.length}`, { start, end, totalMessages: model.items.length, field: 'range', sourceLocation: 'chat-viewer/model.js' });
     }
     return model.items.slice(start - 1, end);
 }
 
 export function searchChatMessages(model, query) {
     if (typeof query !== 'string' || query.trim().length === 0)
-        throw new ToolkitError('EMPTY_QUERY', '请输入要搜索的正文。');
+        throw new ToolkitError('EMPTY_QUERY', '请输入要搜索的正文。', { field: 'query', expected: 'string', actualType: valueType(query), sourceLocation: 'chat-viewer/model.js' });
     const needle = query.toLocaleLowerCase();
-    return model.items.filter(item => item.text.toLocaleLowerCase().includes(needle));
+    return model.items.filter(item => item.readable && item.text.toLocaleLowerCase().includes(needle));
 }
 
 export function paginateChatItems(items, page, pageSize = CHAT_VIEW_PAGE_SIZE) {

@@ -49,6 +49,8 @@ function stats(model) {
         ['明确 system 排除', model.stats.excludedSystemMessages],
         ['tool 排除', model.stats.excludedToolMessages],
         ['隐藏对话', model.stats.hiddenConversationMessages],
+        ['正文不可读', model.stats.unreadableMessages],
+        ['候选异常', model.stats.invalidSwipeMessages],
     ];
     return h('div', { className: 'viewer-stats' }, values.map(([label, value]) => h('div', {},
         h('span', { text: label }),
@@ -57,6 +59,8 @@ function stats(model) {
 }
 
 function messageBody(item, expanded, query) {
+    if (!item.readable)
+        return callout(item.issues.find(issue => issue.code !== 'MESSAGE_SWIPE_INVALID').message, 'warning');
     const snippet = expanded
         ? { text: item.text, truncated: false }
         : query ? searchSnippet(item.text, query) : prefixSnippet(item.text);
@@ -74,11 +78,11 @@ function messageCard(item, view, runtime, props, rerender) {
     const expanded = view.expanded === key;
     const query = view.resultMode === 'search' ? view.appliedQuery : '';
     const metadata = [
-        item.role === 'user' ? '用户' : 'AI',
+        item.role === 'unknown' ? '角色未知' : item.role === 'user' ? '用户' : 'AI',
         item.name,
         formatDate(item.sendDate),
         item.hidden ? (item.compact ? '隐藏/紧凑' : '隐藏') : '',
-        item.swipeCount ? `swipe ${item.swipeNumber}/${item.swipeCount}` : '',
+        item.swipeCount ? `swipe ${item.swipeNumber ?? '?'}/${item.swipeCount}` : '',
         `原始索引 ${item.absoluteIndex}`,
     ].filter(Boolean);
     return h('article', { className: 'viewer-message-card', dataset: { absoluteIndex: item.absoluteIndex } },
@@ -91,7 +95,7 @@ function messageCard(item, view, runtime, props, rerender) {
                 actionButton(expanded ? '收起' : '展开全文', () => {
                     view.expanded = expanded ? null : key;
                     rerender();
-                }, { className: 'secondary' }),
+                }, { className: 'secondary', disabled: !item.readable }),
                 actionButton('跳转', () => {
                     void (async () => {
                         try {
@@ -104,10 +108,11 @@ function messageCard(item, view, runtime, props, rerender) {
                             rerender();
                         }
                     })();
-                }, { className: 'primary', disabled: runtime.state.busy }),
+                }, { className: 'primary', disabled: runtime.state.busy || !item.readable }),
             ),
         ),
         messageBody(item, expanded, query),
+        ...item.issues.filter(issue => issue.code === 'MESSAGE_SWIPE_INVALID').map(issue => callout(issue.message, 'warning')),
     );
 }
 
@@ -196,9 +201,9 @@ export function mountChatViewerPage(target, props) {
         if (!view.enabled)
             root.append(callout('功能尚未启用。启用后才会读取当前聊天和订阅聊天变化事件。', 'warning'));
         if (view.notice)
-            root.append(callout(view.notice, 'danger'));
+            root.append(callout(view.notice, 'warning'));
         else if (runtime.state.error)
-            root.append(callout(runtime.state.error, 'danger'));
+            root.append(callout(runtime.state.error, 'warning'));
         if (runtime.state.stale)
             root.append(callout('当前聊天已发生变化；下次查看、搜索或跳转时会自动重新读取。', 'warning'));
     }
@@ -305,6 +310,8 @@ export function mountChatViewerPage(target, props) {
             return;
         }
         root.append(stats(model));
+        if (model.stats.unreadableMessages)
+            root.append(callout(`${model.stats.unreadableMessages} 个楼层正文不可读，已保留楼层标记；搜索结果不包含这些楼层，其它消息仍可正常查看。`, 'warning'));
         renderTabs(root);
         if (view.tab === 'range')
             renderRange(root, model);

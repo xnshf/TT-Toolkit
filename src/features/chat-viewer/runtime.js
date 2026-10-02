@@ -1,4 +1,6 @@
-import { ToolkitError, errorKind, errorMessage } from '../../kernel/errors.js';
+import { ToolkitError, errorMessage } from '../../kernel/errors.js';
+import { sameConversationIdentity } from '../../kernel/chat-projection.js';
+import { logChatFailure, logChatProjectionIssues } from '../../kernel/chat-diagnostics.js';
 import { buildChatViewModel, matchesMessageTarget, searchChatMessages, selectChatRange } from './model.js';
 
 export class ChatViewerRuntime {
@@ -67,7 +69,8 @@ export class ChatViewerRuntime {
             const model = buildChatViewModel(await this.host.snapshot());
             this.mutable.model = model;
             this.mutable.stale = false;
-            this.mutable.status = `已读取 ${model.stats.conversationMessages} 个对话楼层。`;
+            logChatProjectionIssues(this.log, model, 'chat.snapshot', this.host.chatAlias(model.identity.stableId));
+            this.mutable.status = `已读取 ${model.stats.conversationMessages} 个对话楼层；${model.stats.unreadableMessages} 个正文不可读，${model.stats.invalidSwipeMessages} 个候选信息异常。`;
             this.log.info('snapshot.loaded', {
                 data: {
                     chatAlias: this.host.chatAlias(model.identity.stableId),
@@ -102,20 +105,27 @@ export class ChatViewerRuntime {
             const previousModel = this.mutable.model;
             if (!previousModel)
                 throw new ToolkitError('NO_SNAPSHOT', '请先读取当前聊天。');
+            if (!item?.readable)
+                throw new ToolkitError('MESSAGE_UNREADABLE', '此楼层无法验证正文，请选择可读取的楼层；其它查看和搜索仍可使用。', {
+                    absoluteIndex: item?.absoluteIndex, conversationIndex: item?.conversationIndex, field: 'target', sourceLocation: 'chat-viewer/runtime.js',
+                });
             const snapshot = await this.host.snapshot();
             const refreshed = buildChatViewModel(snapshot);
+            logChatProjectionIssues(this.log, refreshed, 'chat.jump', this.host.chatAlias(refreshed.identity.stableId));
             this.mutable.model = refreshed;
             this.mutable.stale = false;
-            if (refreshed.identity.stableId !== previousModel.identity.stableId) {
+            if (!sameConversationIdentity(refreshed.identity, previousModel.identity)) {
                 this.mutable.status = '当前聊天已切换，请重新选择目标楼层。';
-                throw new ToolkitError('CHAT_CHANGED', this.mutable.status);
+                throw new ToolkitError('CHAT_CHANGED', this.mutable.status, { field: 'target', sourceLocation: 'chat-viewer/runtime.js' });
             }
             const refreshedItem = refreshed.items[item.conversationIndex - 1];
             if (!refreshedItem
                 || refreshedItem.absoluteIndex !== item.absoluteIndex
                 || !matchesMessageTarget(snapshot.messages[item.absoluteIndex], item)) {
                 this.mutable.status = '目标楼层在聊天变化后已移动或修改，请重新选择。';
-                throw new ToolkitError('MESSAGE_CHANGED', this.mutable.status);
+                throw new ToolkitError('MESSAGE_CHANGED', this.mutable.status, {
+                    absoluteIndex: item.absoluteIndex, conversationIndex: item.conversationIndex, field: 'target', sourceLocation: 'chat-viewer/runtime.js',
+                });
             }
             await this.host.jumpToMessage(refreshed.identity.stableId, item.absoluteIndex);
             this.mutable.status = `已跳转到对话楼层 ${item.conversationIndex}。`;
@@ -143,7 +153,7 @@ export class ChatViewerRuntime {
         }
         catch (error) {
             if (!nested) {
-                this.log.error('operation.failed', { data: { operation, ...errorKind(error) }, sensitive: { error } });
+                logChatFailure(this.log, 'operation.failed', operation, error, 'chat-viewer/runtime.js');
                 this.mutable.error = errorMessage(error);
             }
             throw error;

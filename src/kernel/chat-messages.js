@@ -13,7 +13,7 @@ export function classifyMessage(raw, messageIndex) {
     if (!isRecord(raw))
         throw new ToolkitError('INVALID_MESSAGE', '聊天楼层必须是对象', { messageIndex });
     const extra = isRecord(raw.extra) ? raw.extra : {};
-    if (Array.isArray(extra.tool_invocations))
+    if (raw.role === 'tool' || Array.isArray(extra.tool_invocations))
         return 'tool';
     if (SYSTEM_MESSAGE_TYPES.has(extra.type) || extra.uses_system_ui === true)
         return 'system';

@@ -27,7 +27,9 @@ function statsGrid(plan) {
         ['范围内', plan.stats.rangedMessages],
         ['角色过滤后', plan.stats.roleFilteredMessages],
         ['最终导出', plan.stats.exportedMessages],
-        ['规则跳过', plan.stats.skippedMessages],
+        ['跳过总数', plan.stats.skippedMessages],
+        ['正文不可读跳过', plan.stats.unreadableSkippedMessages],
+        ['规则跳过', plan.stats.ruleSkippedMessages],
         ['正文变化', plan.stats.changedMessages],
         ['警告', plan.stats.warningCount],
     ];
@@ -99,15 +101,15 @@ export function mountChatExporterPage(target, props) {
             await task();
         }
         catch (error) {
-            notices.show(errorMessage(error), 'danger');
+            notices.show(errorMessage(error), 'warning');
         }
         render();
     };
 
-    async function download(confirmed) {
+    async function download(confirmed, plan) {
         try {
             const suggestion = runtime.downloadSuggestion(view.title);
-            const result = await saveChatDocument(target, suggestion, () => runtime.prepareDownload(view.title, confirmed));
+            const result = await saveChatDocument(target, suggestion, () => runtime.prepareDownload(view.title, confirmed, plan));
             if (result.saved) {
                 runtime.downloaded(result.payload);
                 notices.show('文档已保存。', 'success');
@@ -159,7 +161,7 @@ export function mountChatExporterPage(target, props) {
         if (notice)
             root.append(notice);
         if (runtime.state.error)
-            root.append(callout(runtime.state.error, 'danger'));
+            root.append(callout(runtime.state.error, 'warning'));
         if (runtime.state.stale)
             root.append(callout('当前聊天已变化，原预览已失效，请重新生成。', 'warning'));
         if (view.dirty && runtime.state.currentPlan)
@@ -233,14 +235,14 @@ export function mountChatExporterPage(target, props) {
                     if (plan.requiresConfirmation) {
                         const confirmed = await confirmDanger(target.ownerDocument, {
                             title: '确认跳过有风险的消息',
-                            message: `预览包含 ${plan.stats.warningCount} 条警告，将跳过 ${plan.stats.skippedMessages} 条消息。导出不会修改聊天，确定按预览结果保存吗？`,
+                            message: `预览包含 ${plan.stats.warningCount} 条警告，将跳过 ${plan.stats.skippedMessages} 条消息，其中 ${plan.stats.unreadableSkippedMessages} 条正文不可读。导出文件可能不完整，但不会修改原聊天。此文档不是聊天备份；需要完整记录时请先自行通过宿主备份。确定按当前预览继续保存吗？`,
                             confirmLabel: '确认并保存',
                             confirmClass: 'primary',
                         });
                         if (!confirmed)
                             return;
                     }
-                    await download(plan.requiresConfirmation);
+                    await download(plan.requiresConfirmation, plan);
                 });
             }, { className: 'primary', disabled: runtime.state.busy || runtime.state.stale || view.dirty }),
         ));
@@ -250,12 +252,12 @@ export function mountChatExporterPage(target, props) {
         root.append(h('div', { className: 'exporter-preview-list' }, entries.map(entry =>
             h('article', { className: `exporter-preview-card${entry.included ? '' : ' skipped'}` },
                 h('header', {},
-                    h('strong', { text: `对话楼层 ${entry.conversationIndex} · ${entry.role === 'assistant' ? 'AI' : '用户'}` }),
+                    h('strong', { text: `对话楼层 ${entry.conversationIndex} · ${entry.role === 'unknown' ? '角色未知' : entry.role === 'assistant' ? 'AI' : '用户'}` }),
                     h('span', { text: entry.included ? (entry.originalText === entry.text ? '原样' : '已处理') : '将跳过' }),
                 ),
                 entry.originalText !== entry.text && entry.included
                     ? h('div', { className: 'exporter-diff' }, h('pre', { text: entry.originalText }), h('pre', { text: entry.text }))
-                    : h('pre', { text: entry.included ? entry.text : entry.originalText }),
+                    : h('pre', { text: !entry.readable ? entry.issues.find(issue => issue.code !== 'MESSAGE_SWIPE_INVALID').message : entry.included ? entry.text : entry.originalText }),
             ))));
         root.append(h('div', { className: 'pager' },
             actionButton('上一页', () => { view.page -= 1; render(); }, { disabled: view.page === 0 }),
@@ -268,6 +270,12 @@ export function mountChatExporterPage(target, props) {
         const model = runtime.state.model;
         root.append(h('div', { className: 'exporter-toolbar' }, h('span', { text: runtime.state.status })));
         renderExportControls(root, model);
+        if (model?.issues?.length) {
+            root.append(h('details', {},
+                h('summary', { text: `聊天中有 ${model.issues.length} 项异常；不阻塞其它消息，展开查看楼层与原因` }),
+                callout(model.issues.map(issue => issue.message).join('\n'), 'warning'),
+            ));
+        }
         if (model)
             renderPreview(root);
     }
