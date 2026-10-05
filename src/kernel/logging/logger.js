@@ -30,6 +30,7 @@ export class ToolkitLogger {
     pending = [];
     pendingBytes = 0;
     nextSequence = 1;
+    nextChunkSequence = 1;
     flushTimer = null;
     flushQueue = Promise.resolve();
     memoryBytes = 0;
@@ -111,6 +112,15 @@ export class ToolkitLogger {
             this.mutable.persistenceError = this.mutable.legacyLogsDetected
                 ? errorMessage(error)
                 : `日志索引读取失败：${errorMessage(error)}`;
+            if (error?.code === 'DUPLICATE_LOG_CHUNK') {
+                console.warn('[TT-Toolkit][system][logger][index.invalid]', {
+                    operation: 'logs.initialize', phase: 'index-validation', code: error.code,
+                    sourceLocation: 'kernel/logging/schema.js:parseLogIndex',
+                    field: 'sessions.chunks.key', expected: 'unique blob key',
+                    sessionIndex: error.context.sessionIndex, chunkIndex: error.context.chunkIndex,
+                    outcome: 'log-storage-blocked', nextAction: 'back-up-log-storage-and-clear-logs',
+                });
+            }
         }
         await this.probeHostFrontendLogs();
         await this.loadProtectedValues();
@@ -279,6 +289,7 @@ export class ToolkitLogger {
             this.mutable.currentEntries = [];
             this.memoryBytes = 0;
             this.nextSequence = 1;
+            this.nextChunkSequence = 1;
             this.hostIdSet = new Set();
             this.mutable.enabled = true;
             this.mutable.persistenceError = '';
@@ -451,8 +462,8 @@ export class ToolkitLogger {
                 await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
         }
         catch (error) {
-            this.record('error', 'system', 'logger', 'settings.save_failed', {
-                data: { operation: 'settings.save', ...errorKind(error) },
+            this.record('warn', 'system', 'logger', 'settings.save_failed', {
+                data: { operation: 'settings.save', ...errorKind(error), sourceLocation: 'kernel/logging/logger.js:_saveSettingsInternal', outcome: 'settings-or-retention-incomplete', nextAction: 'inspect-log-storage-and-retry' },
                 sensitive: { error },
             });
             throw error;
@@ -651,22 +662,31 @@ export class ToolkitLogger {
         this.flushQueue = this.flushQueue.then(async () => {
             const text = batch.map(eventLine).join('');
             const blob = new Blob([text], { type: 'application/x-ndjson' });
-            const key = `${session.id}.${String(session.chunks.length + 1).padStart(6, '0')}.jsonl`;
+            const chunkSequence = this.nextChunkSequence++;
+            const key = `${session.id}.${String(chunkSequence).padStart(6, '0')}.jsonl`;
+            let phase = 'blob-write';
             try {
                 await this.host.storeSetBlob(LOG_TABLE, key, blob);
                 session.chunks.push({ key, bytes: blob.size, firstSequence: batch[0]?.sequence ?? 0, lastSequence: batch.at(-1)?.sequence ?? 0, eventCount: batch.length });
                 session.bytes += blob.size;
+                phase = 'retention';
                 await this.enforceRetention();
+                phase = 'index-write';
                 await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
                 this.mutable.persistenceError = '';
                 this.syncSessions();
             }
             catch (error) {
-                this.mutable.persistenceError = `日志持久化失败：${errorMessage(error)}`;
+                this.mutable.persistenceError = `日志持久化失败（${phase}）：${errorMessage(error)}。已暂停日志写入，当前日志继续保留在内存；请先导出可读日志，检查存储后清空日志再重新启用。`;
                 this.persistenceAvailable = false;
                 this.storageBlocked = true;
                 this.volatileSessions.set(session.id, structuredClone(this.mutable.currentEntries));
-                console.error('[TT-Toolkit][logger][persistence.failed]', error);
+                console.warn('[TT-Toolkit][system][logger][persistence.failed]', {
+                    operation: 'logs.flush', phase,
+                    code: { 'blob-write': 'LOG_BLOB_WRITE_FAILED', retention: 'LOG_RETENTION_FAILED', 'index-write': 'LOG_INDEX_WRITE_FAILED' }[phase],
+                    sourceLocation: 'kernel/logging/logger.js:flush', chunkSequence, eventCount: batch.length,
+                    outcome: 'memory-only', nextAction: 'export-readable-logs-inspect-storage-and-clear-logs',
+                });
                 this.notify();
             }
         });
@@ -705,8 +725,12 @@ export class ToolkitLogger {
             await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
         }
         catch (error) {
-            this.mutable.persistenceError = `日志索引保存失败：${errorMessage(error)}`;
-            console.error('[TT-Toolkit][logger][index.failed]', error);
+            this.mutable.persistenceError = `日志索引保存失败：${errorMessage(error)}。请检查存储后重试；如需清空日志，请先导出可读日志。`;
+            console.warn('[TT-Toolkit][system][logger][index.failed]', {
+                operation: 'logs.index.save', phase: 'index-write', code: 'LOG_INDEX_WRITE_FAILED',
+                sourceLocation: 'kernel/logging/logger.js:persistIndexSafely',
+                outcome: 'index-not-saved', nextAction: 'inspect-storage-and-retry',
+            });
             this.notify();
         }
     }
