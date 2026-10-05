@@ -5,6 +5,15 @@ export const temporarilyHiddenFeatureIds = Object.freeze([
 ]);
 
 export const featureDefinitions = [{
+        id: 'toolkit-settings',
+        category: { id: 'settings', label: '设置', order: 90 },
+        label: '界面与入口',
+        description: '选择悬浮球或魔棒菜单入口，重置工作台布局。',
+        icon: '⚙️',
+        order: 1,
+        defaultEnabled: true,
+        load: async () => (await import('./toolkit-settings/index.js')).createToolkitSettingsFeature(),
+    }, {
         id: 'model-settings',
         category: { id: 'settings', label: '设置', order: 90 },
         label: '模型服务',

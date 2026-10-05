@@ -2,7 +2,7 @@
 
 TT-Toolkit 是一个只面向 [TauriTavern](https://github.com/Darkatse/TauriTavern) 的前端工具箱插件，用来集中处理聊天等数据域的辅助功能。
 
-当前版本：`0.7.1`
+当前版本以 [`manifest.json`](./manifest.json) 中的 `version` 为准。
 
 ## 功能
 
@@ -22,6 +22,7 @@ TT-Toolkit 是一个只面向 [TauriTavern](https://github.com/Darkatse/TauriTav
 
 ### 设置
 
+- **界面与入口**：通过单选卡片选择悬浮球、魔棒菜单或两者，使用前置保存栏应用设置，支持桌面和手机布局。
 - **日志**：查看、筛选和导出 TT-Toolkit 的结构化诊断日志。
 
 ### 暂时下架
@@ -45,7 +46,7 @@ TT-Toolkit 仅支持 TauriTavern，不兼容原版 SillyTavern。
 
 4. 重启 TauriTavern。
 
-安装后，点击宿主页面中的 TT-Toolkit 悬浮入口即可打开工具箱。
+安装后，点击宿主页面中的 TT-Toolkit 悬浮入口即可打开工具箱。在 **设置 → 界面与入口** 中可切换为 **魔棒菜单** 或 **两者都显示**；保存后立即生效。魔棒入口位于聊天输入框旁的扩展菜单中，名称为 **TT-Toolkit**。
 
 ## 首次使用
 

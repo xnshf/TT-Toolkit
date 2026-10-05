@@ -1,4 +1,5 @@
 @import './src/style.css';
+@import './src/features/toolkit-settings/style.css';
 @import './src/features/chat-cleaner/style.css';
 @import './src/features/chat-viewer/style.css';
 @import './src/features/chat-exporter/style.css';

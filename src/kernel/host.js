@@ -5,6 +5,7 @@ const CONTEXT_URL = '/scripts/st-context.js';
 const GROUP_URL = '/scripts/group-chats.js';
 const WORLD_INFO_URL = '/scripts/world-info.js';
 const OPENAI_URL = '/scripts/openai.js';
+const EXTENSIONS_URL = '/scripts/extensions.js';
 const PROMPT_CONFLICT_CHAT_NAMESPACE = 'tt-toolkit.prompt-conflict';
 const PROMPT_CONFLICT_INVALIDATION_EVENTS = [
     'SETTINGS_UPDATED', 'OAI_PRESET_CHANGED_AFTER',
@@ -40,6 +41,7 @@ export class TauriTavernHost {
     scriptModule;
     groupModule;
     worldInfoModule;
+    extensionsModule;
     log = null;
     chatAliases = new Map();
     setLogger(log) { this.log = log; }
@@ -90,6 +92,56 @@ export class TauriTavernHost {
         const messages = this.context.chat;
         this.log?.debug('chat.snapshot_created', { data: { chatAlias: this.chatAlias(identity.stableId), messageCount: messages.length }, sensitive: { stableChatId: identity.stableId } });
         return { identity, messages: structuredClone(messages) };
+    }
+    async mountToolkitWandEntry(onOpen) {
+        this.extensionsModule ??= await dynamicImport(EXTENSIONS_URL);
+        const extensions = this.extensionsModule;
+        if (typeof extensions.ensureExtensionsUiReady !== 'function'
+            || typeof extensions.showHideExtensionsMenu !== 'function') {
+            throw new ToolkitError('HOST_WAND_EXPORT_MISSING', '宿主缺少扩展菜单初始化接口。请保留悬浮球入口，重载宿主后重试。');
+        }
+        await extensions.ensureExtensionsUiReady();
+        const menu = document.getElementById('extensionsMenu');
+        const focusTarget = document.getElementById('extensionsMenuButton');
+        if (!menu || !focusTarget) {
+            throw new ToolkitError('HOST_WAND_DOM_MISSING', '宿主扩展菜单挂载点缺失。请保留悬浮球入口，重载宿主后重试。');
+        }
+        if (document.getElementById('tt-toolkit-wand-entry')) {
+            throw new ToolkitError('HOST_WAND_ENTRY_DUPLICATE', 'TT-Toolkit 魔棒入口已存在，请重载宿主后重试。');
+        }
+        const element = document.createElement('div');
+        element.id = 'tt-toolkit-wand-entry';
+        element.className = 'list-group-item flex-container flexGap5';
+        element.setAttribute('role', 'button');
+        element.tabIndex = 0;
+        element.title = '打开 TT-Toolkit';
+        const icon = document.createElement('span');
+        icon.className = 'fa-solid fa-toolbox extensionsMenuExtensionButton';
+        icon.setAttribute('aria-hidden', 'true');
+        element.append(icon, document.createTextNode('TT-Toolkit'));
+        const click = () => onOpen(focusTarget);
+        const keydown = event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                element.click();
+            }
+        };
+        element.addEventListener('click', click);
+        element.addEventListener('keydown', keydown);
+        menu.append(element);
+        const dispose = () => {
+            element.removeEventListener('click', click);
+            element.removeEventListener('keydown', keydown);
+            element.remove();
+            extensions.showHideExtensionsMenu();
+        };
+        try {
+            extensions.showHideExtensionsMenu();
+        } catch (error) {
+            dispose();
+            throw error;
+        }
+        return { element, focusTarget, dispose };
     }
     async globalGet(key) {
         const result = await this.abi.api.extension.store.tryGetJson({ namespace: this.namespace, key });

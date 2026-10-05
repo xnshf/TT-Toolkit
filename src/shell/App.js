@@ -1,5 +1,4 @@
 import { actionButton, bindScrollFade, h } from '../ui/dom.js';
-import { TOOLKIT_VERSION } from '../version.js';
 
 function taxonomy(features) {
     const categories = new Map();
@@ -38,7 +37,7 @@ export class ToolkitApp {
 
     mount() {
         const titlebar = h('header', { className: 'workbench-titlebar', attrs: { 'data-drag-handle': '' } },
-            h('div', {}, h('b', { text: 'TT-Toolkit' }), h('span', { text: TOOLKIT_VERSION })),
+            h('div', {}, h('b', { text: 'TT-Toolkit' }), h('span', { text: this.props.version })),
             h('div', { className: 'title-actions' },
                 actionButton('◇', this.props.cycleSize, { className: 'layout-only', title: '切换尺寸档位', ariaLabel: '切换尺寸档位' }),
                 actionButton('↺', this.props.resetLayout, { className: 'layout-only', title: '重置界面布局', ariaLabel: '重置界面布局' }),
@@ -175,6 +174,7 @@ export class ToolkitApp {
             const dispose = await feature.mount(this.main, {
                 enabled: Boolean(this.props.enabled[feature.id]),
                 closeWorkbench: this.props.close,
+                entrySettings: this.props.entrySettings,
                 setEnabled: async value => {
                     await this.props.setFeatureEnabled(feature.id, value);
                     this.renderNavigation();

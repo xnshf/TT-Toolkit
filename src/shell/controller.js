@@ -1,5 +1,5 @@
-import { parseShellSettings } from '../kernel/settings.js';
-import { errorKind } from '../kernel/errors.js';
+import { parseShellSettings, validateEntryMode } from '../kernel/settings.js';
+import { errorKind, ToolkitError } from '../kernel/errors.js';
 import { mountToolkitApp } from '../ui/main.js';
 
 const STYLE_URL = '/scripts/extensions/third-party/TT-Toolkit/style.css';
@@ -116,6 +116,9 @@ export class ShellController {
   enabled = {};
   launcher;
   launcherButton;
+  wandEntry = null;
+  entryWarning = '';
+  returnFocus = null;
   overlay;
   iframe;
   workspace;
@@ -125,9 +128,10 @@ export class ShellController {
   disposeWorkspaceDrag = null;
   log;
 
-  constructor(host, features, logger) {
+  constructor(host, features, logger, version = '') {
     this.host = host;
     this.features = features;
+    this.version = version;
     this.log = logger.scoped({ featureId: 'system', source: 'shell' });
   }
 
@@ -149,6 +153,13 @@ export class ShellController {
     });
     this.mountLauncher();
     await this.mountWorkbench();
+    try {
+      await this.applyEntryMode(this.settings.entryMode);
+    } catch (error) {
+      this.entryWarning = '魔棒入口暂不可用，已保留悬浮球供你打开工具箱。请在“设置 / 界面与入口”重试，或重载宿主。';
+      this.logEntryFailure(error, 'initialize', 'floating_retained');
+      this.launcherButton.title = this.entryWarning;
+    }
     for (const feature of this.features) {
       if (feature.activationPhase !== 'bootstrap' && this.enabled[feature.id]) {
         await this.activateStartupFeature(feature);
@@ -225,6 +236,60 @@ export class ShellController {
     );
   }
 
+  logEntryFailure(error, phase, result) {
+    const diagnostics = {
+      HOST_WAND_EXPORT_MISSING: { field: 'extensions.ensureExtensionsUiReady/showHideExtensionsMenu', expected: 'function', actualType: 'missing-function' },
+      HOST_WAND_DOM_MISSING: { field: '#extensionsMenu/#extensionsMenuButton', expected: 'existing-dom-elements', actualType: 'missing-element' },
+      HOST_WAND_ENTRY_DUPLICATE: { field: '#tt-toolkit-wand-entry', expected: 'absent-before-mount', actualType: 'existing-element' },
+      ENTRY_SETTINGS_SAVE_FAILED: { field: 'shell-settings-v1', expected: 'successful-json-write', actualType: 'failed-write' },
+    };
+    const diagnostic = Object.hasOwn(diagnostics, error?.code) ? diagnostics[error.code] : null;
+    this.log.warn('entry.failed', { data: {
+      operation: 'shell.entry', phase, sourceLocation: 'src/shell/controller.js',
+      reasonCode: diagnostic ? error.code : 'ENTRY_SETUP_FAILED',
+      ...(diagnostic ?? { field: 'entryMode', expected: 'floating|wand|both', actualType: error instanceof Error ? 'Error' : typeof error }), result,
+      recoveryAction: 'retry_settings_or_reload',
+    } });
+  }
+
+  async applyEntryMode(mode, save = false) {
+    validateEntryMode(mode);
+    let prepared = this.wandEntry;
+    if (mode !== 'floating' && !prepared) {
+      prepared = await this.host.mountToolkitWandEntry(focusTarget => this.openWorkbench(focusTarget));
+    }
+    if (save) {
+      const previous = this.settings.entryMode;
+      this.settings.entryMode = mode;
+      try {
+        await this.persist();
+      } catch {
+        this.settings.entryMode = previous;
+        if (prepared !== this.wandEntry) prepared?.dispose();
+        throw new ToolkitError('ENTRY_SETTINGS_SAVE_FAILED', '入口设置保存失败，原入口已保留。请重试。');
+      }
+    }
+    if (mode === 'floating') {
+      this.wandEntry?.dispose();
+      this.wandEntry = null;
+    } else {
+      this.wandEntry = prepared;
+    }
+    this.launcher.style.setProperty('display', mode === 'wand' ? 'none' : 'block', 'important');
+    this.entryWarning = '';
+    this.launcherButton.title = '打开 TT-Toolkit';
+  }
+
+  async setEntryMode(mode) {
+    try {
+      await this.applyEntryMode(mode, true);
+      this.log.info('entry.changed', { data: { entryMode: mode, result: 'applied' } });
+    } catch (error) {
+      this.logEntryFailure(error, 'change', 'previous_entry_retained');
+      throw error;
+    }
+  }
+
   launcherPoint() {
     return (mobile() ? this.settings.launcher.mobile : this.settings.launcher.desktop)
       ?? { x: 18, y: Math.max(80, innerHeight * 0.55) };
@@ -289,10 +354,16 @@ export class ShellController {
     const mount = frameDocument.getElementById('tt-toolkit-frame-root');
     if (!mount) throw new Error('工具箱 iframe 挂载点不存在');
 
-    mountToolkitApp(mount, {
+    this.app = mountToolkitApp(mount, {
+      version: this.version,
       features: this.features,
       enabled: this.enabled,
       initialRoute: this.settings.lastRoute,
+      entrySettings: {
+        getState: () => ({ mode: this.settings.entryMode, warning: this.entryWarning }),
+        setMode: mode => this.setEntryMode(mode),
+        resetLayout: () => this.resetLayout(),
+      },
       close: () => this.closeWorkbench(),
       cycleSize: () => this.cycleSize(),
       resetLayout: () => this.resetLayout(),
@@ -357,7 +428,8 @@ export class ShellController {
     else this.closeWorkbench();
   }
 
-  openWorkbench() {
+  openWorkbench(focusTarget = this.launcherButton) {
+    this.returnFocus = focusTarget;
     // 移动端为近全屏悬浮窗口,与桌面共用记忆位置;clamp 保证不出视口。
     const point = clampPoint(
       this.settings.workspace.position ?? {
@@ -375,7 +447,10 @@ export class ShellController {
 
   closeWorkbench() {
     this.overlay.style.setProperty('display', 'none', 'important');
-    this.launcherButton?.focus({ preventScroll: true });
+    const target = this.launcher.style.display === 'none'
+      ? this.wandEntry?.focusTarget
+      : (this.returnFocus?.isConnected ? this.returnFocus : this.launcherButton);
+    target?.focus({ preventScroll: true });
   }
 
   applyWorkspaceSize() {
@@ -403,6 +478,17 @@ export class ShellController {
     this.workspace.style.top = `${point.y}px`;
     this.settings.workspace.position = point;
     void this.persist();
+  }
+
+  dispose() {
+    window.removeEventListener('resize', this.handleViewportChange);
+    this.disposeLauncherDrag?.();
+    this.disposeWorkspaceDrag?.();
+    this.wandEntry?.dispose();
+    this.wandEntry = null;
+    this.app?.unmount();
+    this.launcher?.remove();
+    this.overlay?.remove();
   }
 
   resetLayout() {

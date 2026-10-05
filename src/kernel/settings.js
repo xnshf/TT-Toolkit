@@ -1,9 +1,18 @@
 import { ToolkitError } from './errors.js';
+export const ENTRY_MODES = Object.freeze(['floating', 'wand', 'both']);
+
+export function validateEntryMode(value) {
+    if (!ENTRY_MODES.includes(value))
+        throw new ToolkitError('INVALID_SCHEMA', '入口方式必须是悬浮球、魔棒菜单或两者。');
+    return value;
+}
+
 export function defaultShellSettings() {
     return {
         schemaVersion: 1,
         enabledFeatures: { 'developer-logs': false, 'model-settings': true, 'chat-cleaner': false, 'chat-exporter': false, 'prompt-viewer': false, 'world-info-ai': false, 'world-info-editor': true, 'prompt-conflict': false },
         lastRoute: 'overview',
+        entryMode: 'floating',
         launcher: { desktop: null, mobile: null },
         workspace: { position: null, size: 'standard' },
     };
@@ -49,6 +58,8 @@ export function parseShellSettings(value) {
         schemaVersion: 1,
         enabledFeatures,
         lastRoute: raw.lastRoute,
+        // 已知旧版 v1 未存储 entryMode：显式补齐原有悬浮球行为，非法值不迁移。
+        entryMode: Object.hasOwn(raw, 'entryMode') ? validateEntryMode(raw.entryMode) : 'floating',
         launcher: { desktop: point(launcher.desktop), mobile: point(launcher.mobile) },
         workspace: { position: point(workspace.position), size: workspace.size },
     };

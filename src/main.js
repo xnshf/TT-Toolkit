@@ -4,8 +4,10 @@ import { errorMessage } from './kernel/errors.js';
 import { featureRegistrations } from './features/registry.js';
 import { ShellController } from './shell/controller.js';
 import { ToolkitLogger } from './kernel/logging/logger.js';
+import { loadToolkitVersion } from './version.js';
 let bootstrapLog = null;
 async function bootstrap() {
+    const version = await loadToolkitVersion();
     const host = new TauriTavernHost();
     await host.initialize();
     const logger = new ToolkitLogger(host);
@@ -14,7 +16,7 @@ async function bootstrap() {
     host.setLogger(logger.scoped({ featureId: 'system', source: 'host' }));
     const featureCatalog = featureRegistrations.map(({ id, label }) => ({ id, label }));
     const features = resolveFeatures({ host, logger, featureCatalog }, featureRegistrations);
-    const shell = new ShellController(host, features, logger);
+    const shell = new ShellController(host, features, logger, version);
     await shell.initialize();
     bootstrapLog.info('completed');
 }
