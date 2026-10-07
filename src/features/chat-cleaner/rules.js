@@ -95,6 +95,7 @@ export function rulesFingerprint(settings) {
     return stableHash({
         algorithmVersion: 1,
         deleteNativeReasoning: settings.deleteNativeReasoning,
+        clearSwipes: settings.clearSwipes,
         assistant: settings.assistant,
         user: settings.user,
         swipeScope: 'all',

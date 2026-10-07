@@ -1,5 +1,6 @@
 import { ToolkitError } from './errors.js';
 import { sha256Hex } from './hash.js';
+import { sameConversationIdentity } from './chat-projection.js';
 const SCRIPT_URL = '/script.js';
 const CONTEXT_URL = '/scripts/st-context.js';
 const GROUP_URL = '/scripts/group-chats.js';
@@ -92,6 +93,27 @@ export class TauriTavernHost {
         const messages = this.context.chat;
         this.log?.debug('chat.snapshot_created', { data: { chatAlias: this.chatAlias(identity.stableId), messageCount: messages.length }, sensitive: { stableChatId: identity.stableId } });
         return { identity, messages: structuredClone(messages) };
+    }
+    async hydrateChatSwipes(identity, messageIndex) {
+        await this.assertIdentity(identity.stableId, identity.ref);
+        const message = this.context.chat[messageIndex];
+        if (!message?.tt_swipe_cold)
+            return;
+        if (typeof this.scriptModule.hydrateChatMessageSwipes !== 'function')
+            throw new ToolkitError('HOST_SWIPE_EXPORT_MISSING', '宿主缺少候选读回接口，未加载候选已保留。');
+        let loaded;
+        try {
+            loaded = await this.scriptModule.hydrateChatMessageSwipes(messageIndex);
+        }
+        catch {
+            await this.assertIdentity(identity.stableId, identity.ref);
+            if (this.context.chat[messageIndex] !== message)
+                throw new ToolkitError('COMMIT_CONFLICT', '候选读回期间楼层已改变，请重新预览。', { messageIndex });
+            throw new ToolkitError('SWIPE_LOAD_FAILED', '候选读回失败，未加载候选已保留。', { messageIndex });
+        }
+        await this.assertIdentity(identity.stableId, identity.ref);
+        if (!loaded || this.context.chat[messageIndex] !== message)
+            throw new ToolkitError('COMMIT_CONFLICT', '候选读回期间楼层已改变，请重新预览。', { messageIndex });
     }
     async mountToolkitWandEntry(onOpen) {
         this.extensionsModule ??= await dynamicImport(EXTENSIONS_URL);
@@ -425,9 +447,10 @@ export class TauriTavernHost {
         else
             metadata.extensions[namespace] = cloned;
     }
-    async assertIdentity(expectedStableId) {
+    async assertIdentity(expectedStableId, expectedRef) {
         const current = await this.identity();
-        if (current.stableId !== expectedStableId)
+        if (current.stableId !== expectedStableId || (expectedRef !== undefined
+            && !sameConversationIdentity(current, { stableId: expectedStableId, ref: expectedRef })))
             throw new ToolkitError('CHAT_CHANGED', '操作期间当前聊天已切换。');
     }
     async saveCurrentChat() {

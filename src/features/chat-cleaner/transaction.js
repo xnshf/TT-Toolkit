@@ -1,10 +1,16 @@
 import { ToolkitError, errorMessage } from '../../kernel/errors.js';
 import { isRecord } from './schema.js';
 import { classifyMessage } from './plan.js';
+import { logCleanerFailure } from './diagnostics.js';
 function sameValue(a, b) {
     if (Object.is(a, b))
         return true;
-    return JSON.stringify(a) === JSON.stringify(b);
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b))
+        return false;
+    if (Array.isArray(a) && a.length !== b.length)
+        return false;
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && sameValue(a[key], b[key]));
 }
 function currentField(record, key) {
     return { present: Object.hasOwn(record, key), value: record[key] };
@@ -51,6 +57,12 @@ function validatePlan(chat, plan) {
                 currentRole,
             });
         }
+        for (const [key, expected] of Object.entries(change.beforeFields)) {
+            if (!sameField(raw, key, expected))
+                throw new ToolkitError('COMMIT_CONFLICT', '预览后目标正文或候选结构已改变，请重新扫描。', { messageIndex: change.messageIndex });
+        }
+        if (change.clearSwipesPatch && !sameField(raw, 'swipe_info', change.clearSwipesPatch.beforeInfo))
+            throw new ToolkitError('COMMIT_CONFLICT', '预览后候选信息已改变，请重新扫描。', { messageIndex: change.messageIndex });
         for (const patch of change.bodyPatches) {
             const current = patch.swipeIndex === null
                 ? raw.mes
@@ -84,20 +96,27 @@ function applyPlan(chat, plan) {
         }
         for (const patch of change.reasoningPatches)
             clearReasoning(resolveReasoningExtra(raw, patch));
+        if (change.clearSwipesPatch) {
+            const { currentSwipe } = change.clearSwipesPatch;
+            raw.swipes = [raw.swipes[currentSwipe]];
+            if (Array.isArray(raw.swipe_info))
+                raw.swipe_info = [raw.swipe_info[currentSwipe]];
+            raw.swipe_id = 0;
+        }
     }
 }
 export async function commitOperation(host, plan, log) {
     const chatAlias = log ? host.chatAlias(plan.identity.stableId) : undefined;
     log?.debug('transaction.validating', { data: { chatAlias, changedMessages: plan.changes.length } });
-    await host.assertIdentity(plan.identity.stableId);
+    await host.assertIdentity(plan.identity.stableId, plan.identity.ref);
     const chat = host.context.chat;
     validatePlan(chat, plan);
     applyPlan(chat, plan);
     log?.debug('transaction.applied', { data: { chatAlias, changedMessages: plan.changes.length } });
     try {
-        await host.assertIdentity(plan.identity.stableId);
+        await host.assertIdentity(plan.identity.stableId, plan.identity.ref);
         await host.saveCurrentChat();
-        await host.assertIdentity(plan.identity.stableId);
+        await host.assertIdentity(plan.identity.stableId, plan.identity.ref);
         await host.reloadCurrentChat();
         log?.info('transaction.persisted', { data: { chatAlias, changedMessages: plan.changes.length }, sensitive: { chatIdentity: plan.identity } });
     }
@@ -106,7 +125,8 @@ export async function commitOperation(host, plan, log) {
             await host.reloadCurrentChat();
         }
         catch { /* Report the original persistence failure. */ }
-        log?.error('transaction.persistence_failed', { data: { chatAlias, changedMessages: plan.changes.length, errorKind: error instanceof ToolkitError ? error.code : error instanceof Error ? error.name : typeof error }, sensitive: { error, chatIdentity: plan.identity } });
+        if (log)
+            logCleanerFailure(log, 'transaction.persistence_failed', 'cleaner.persist', new ToolkitError('SAVE_FAILED', '保存失败，已请求重载。'), 'chat-cleaner/transaction.js:commitOperation');
         throw new ToolkitError('SAVE_FAILED', `聊天保存失败，已请求重新载入权威数据：${errorMessage(error)}`);
     }
 }

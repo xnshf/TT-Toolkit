@@ -1,5 +1,5 @@
 import { ToolkitError } from '../../kernel/errors.js';
-const SETTINGS_KEYS = ['schemaVersion', 'deleteNativeReasoning', 'assistant', 'user', 'auto'];
+const SETTINGS_KEYS = ['schemaVersion', 'deleteNativeReasoning', 'clearSwipes', 'assistant', 'user', 'auto'];
 const GROUP_KEYS = ['enabled', 'rules'];
 const RULE_KEYS = ['id', 'enabled', 'start', 'end'];
 const AUTO_KEYS = ['enabled', 'keepAssistant', 'keepUser'];
@@ -62,6 +62,7 @@ export function createDefaultSettings() {
     return {
         schemaVersion: 1,
         deleteNativeReasoning: true,
+        clearSwipes: false,
         assistant: { enabled: true, rules: [] },
         user: { enabled: false, rules: [] },
         auto: { enabled: false, keepAssistant: 5, keepUser: 5 },
@@ -74,13 +75,15 @@ export function parseSettings(value) {
         throw new ToolkitError('INVALID_SCHEMA', '聊天清洗配置必须是对象');
     if (value.schemaVersion !== 1)
         throw new ToolkitError('UNSUPPORTED_SCHEMA', `不支持的聊天清洗配置版本：${String(value.schemaVersion)}`);
-    exactKeys(value, SETTINGS_KEYS, '聊天清洗配置');
+    // Known v1 settings predate clearSwipes; only an absent field defaults to false.
+    exactKeys(value, Object.hasOwn(value, 'clearSwipes') ? SETTINGS_KEYS : SETTINGS_KEYS.filter(key => key !== 'clearSwipes'), '聊天清洗配置');
     if (!isRecord(value.auto))
         throw new ToolkitError('INVALID_SCHEMA', 'auto 必须是对象');
     exactKeys(value.auto, AUTO_KEYS, 'auto');
     return {
         schemaVersion: 1,
         deleteNativeReasoning: boolean(value.deleteNativeReasoning, 'deleteNativeReasoning'),
+        clearSwipes: Object.hasOwn(value, 'clearSwipes') ? boolean(value.clearSwipes, 'clearSwipes') : false,
         assistant: parseGroup(value.assistant, 'assistant'),
         user: parseGroup(value.user, 'user'),
         auto: {

@@ -25,6 +25,11 @@ function flattenPlan(plan) {
                 after: patch.after,
             });
         }
+        if (change.clearSwipesPatch) {
+            items.push({ key: `${change.messageIndex}:swipes`, change, swipeIndex: null,
+                before: `[其它候选 ${change.clearSwipesPatch.removedCount} 个及其 swipe_info]`,
+                after: '[仅保留当前候选，编号重置为 0]', removedSwipes: change.clearSwipesPatch.removedCount });
+        }
         if (!change.bodyPatches.length && change.reasoningPatches.length) {
             items.push({
                 key: `${change.messageIndex}:reasoning`,
@@ -76,7 +81,7 @@ export function mountChatCleanerPage(target, props) {
             h('div', {},
                 h('p', { className: 'eyebrow', text: '聊天数据' }),
                 h('h2', { text: '聊天清洗' }),
-                h('p', { text: '永久移除全部候选中的明确匹配区段与原生 reasoning。' }),
+                h('p', { text: '永久移除明确匹配区段与原生 reasoning，可选择仅保留当前 swipe。' }),
             ),
             h('label', { className: 'master-toggle' }, toggle, h('span', { text: view.enabled ? '已启用' : '未启用' })),
         ));
@@ -122,12 +127,17 @@ export function mountChatCleanerPage(target, props) {
                 ['修改楼层', plan.stats.changedMessages],
                 ['正文删除', plan.stats.bodyRemovedChars],
                 ['思考删除', plan.stats.reasoningRemovedChars],
+                ['其它候选清除', plan.stats.removedSwipes ?? 0],
+                ['局部异常楼层', plan.stats.degradedMessages ?? 0],
             ].map(([label, value]) => h('div', {}, h('span', { text: label }), h('strong', { text: String(value) })))));
             if (plan.warnings.length) {
-                const suffix = plan.warnings.length > 5 ? `\n另有 ${plan.warnings.length - 5} 条警告。` : '';
-                section.append(callout(`${plan.warnings.slice(0, 5).join('\n')}${suffix}`, 'warning'));
+                section.append(h('details', { className: 'callout warning', open: true },
+                    h('summary', { text: `预览警告（${plan.warnings.length} 条，请核对局部遗漏及候选清除）` }),
+                    h('ul', {}, plan.warnings.map(message => h('li', { text: message }))),
+                ));
             }
             const hasEmpty = plan.changes.some(change => change.emptySwipeIndexes.length > 0);
+            const removedSwipes = plan.stats.removedSwipes ?? 0;
             if (hasEmpty)
                 section.append(callout('存在将变为空字符串的 swipe。提交时需要额外危险确认。', 'danger'));
             const flattened = flattenPlan(plan);
@@ -141,14 +151,12 @@ export function mountChatCleanerPage(target, props) {
                     void run(async () => {
                         const confirmed = await confirmDanger(target.ownerDocument, {
                             title: hasEmpty ? '确认保存空 swipe' : '确认永久清洗',
-                            message: hasEmpty
-                                ? '本批次包含将被保存为空字符串的候选。插件不提供撤销，确定继续吗？'
-                                : '将永久写回当前聊天。插件不提供备份或撤销，确定继续吗？',
+                            message: `将永久写回当前聊天。${hasEmpty ? '本批次包含将被保存为空字符串的候选。' : ''}${removedSwipes ? `将删除 ${removedSwipes} 个其它候选及其 swipe_info，仅保留当前候选。` : ''}${plan.warnings.length ? `有 ${plan.warnings.length} 条警告，请核对上述局部遗漏后继续。` : ''}插件不提供备份或撤销，请先自行备份；删除内容只能从你自己的备份恢复。确定继续吗？`,
                             confirmLabel: '确认永久提交',
                         });
                         if (!confirmed)
                             return;
-                        await runtime.commitManual(hasEmpty);
+                        await runtime.commitManual(hasEmpty, plan);
                         view.previewKeep = null;
                         notices.show(runtime.state.status, 'success');
                     });
@@ -163,7 +171,7 @@ export function mountChatCleanerPage(target, props) {
                 }, { className: 'preview-row' });
                 row.append(
                     h('span', { text: `楼层 ${item.change.messageIndex} · ${item.swipeIndex === null ? '当前正文/思考' : `swipe ${item.swipeIndex + 1}`}` }),
-                    h('b', { text: `-${item.before.length - item.after.length} 字符` }),
+                    h('b', { text: item.removedSwipes ? `清除 ${item.removedSwipes} 个候选` : `-${item.before.length - item.after.length} 字符` }),
                 );
                 if (view.expanded === item.key)
                     row.append(h('div', { className: 'diff-grid' }, h('pre', { text: item.before }), h('pre', { text: item.after })));
@@ -182,15 +190,20 @@ export function mountChatCleanerPage(target, props) {
         const section = h('div', { className: 'page-section' });
         const reasoning = h('input', { type: 'checkbox', checked: view.draft.deleteNativeReasoning });
         reasoning.addEventListener('change', () => { view.draft.deleteNativeReasoning = reasoning.checked; });
-        section.append(settingRow('删除原生 reasoning', '按酒馆原生行为清空明文及展示状态，保留 signature、native 与未知字段。', reasoning));
+        const clearSwipes = h('input', { type: 'checkbox', checked: view.draft.clearSwipes });
+        clearSwipes.addEventListener('change', () => { view.draft.clearSwipes = clearSwipes.checked; });
         section.append(h('div', { className: 'feature-action-bar' },
-            h('span', { text: '保存 AI、用户与 reasoning 清洗规则。' }),
+            h('span', { text: '保存正文、reasoning 与候选清洗设置。' }),
             actionButton('保存规则', () => {
                 void run(async () => {
                     await runtime.saveSettings(structuredClone(view.draft));
                     notices.show('设置已保存。规则变化后，自动清洗将在当前聊天重新建立基线。', 'success');
                 });
-            }, { className: 'primary' })));
+            }, { className: 'primary', disabled: runtime.state.busy })));
+        section.append(
+            settingRow('删除原生 reasoning', '按酒馆原生行为清空明文及展示状态，保留 signature、native 与未知字段。', reasoning),
+            settingRow('清除其它 swipes（仅保留当前候选）', '默认关闭；适用于手动和自动清洗范围内的 AI/用户楼层，不受正文规则开关影响。永久删除其它候选及其 swipe_info，当前正文保留，编号重置为 0。请先自行备份，插件无法撤销。', clearSwipes),
+        );
         for (const groupName of ['assistant', 'user']) {
             const group = view.draft[groupName];
             const enabled = h('input', { type: 'checkbox', checked: group.enabled });
@@ -254,7 +267,7 @@ export function mountChatCleanerPage(target, props) {
                     await runtime.saveSettings(structuredClone(view.draft));
                     notices.show('设置已保存。规则变化后，自动清洗将在当前聊天重新建立基线。', 'success');
                 });
-            }, { className: 'primary' })));
+            }, { className: 'primary', disabled: runtime.state.busy })));
         section.append(
             settingRow('生成结束后自动增量清洗', '首次运行或规则变化只建立基线，不回扫旧历史。', enabled),
             settingRow('保留最新 AI 消息', '', keepAssistant),
