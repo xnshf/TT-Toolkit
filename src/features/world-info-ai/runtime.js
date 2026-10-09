@@ -1,4 +1,5 @@
 import { errorKind, errorMessage, ToolkitError } from '../../kernel/errors.js';
+import { worldInfoContractFailureData } from '../../kernel/world-info.js';
 import { LlmPresetStore } from '../../kernel/llm-presets.js';
 import { LlmTaskService } from '../../kernel/llm-tasks.js';
 import {
@@ -25,6 +26,7 @@ import { WorldInfoAiConfigStore } from './storage.js';
 
 const MAX_TRANSCRIPT_CHARS = 30_000;
 const FEATURE_SETTINGS_KEY = 'world-info-ai-settings-v1';
+const WORLD_INFO_CONTRACT_WARNING = '宿主世界书事件结构无效，本轮 AI 决策已丢弃，未修改临时条目；下次生成会重新校验，持续出现请核对宿主版本。';
 
 function messageRole(message) {
     if (message?.is_user)
@@ -138,7 +140,10 @@ export class WorldInfoAiRuntime {
         this.disposers = [
             this.host.onHostEvent('GENERATION_STARTED', () => this.beginGeneration()),
             this.host.onHostEvent('GENERATION_AFTER_COMMANDS', (type, params, dryRun) => this.routeGeneration(type, params, dryRun)),
-            this.host.onHostEvent('WORLDINFO_ENTRIES_LOADED', payload => this.applyPending(payload)),
+            this.host.subscribeWorldInfoEntriesLoaded(
+                payload => this.applyPending(payload),
+                error => this.onWorldInfoContractError(error),
+            ),
             this.host.onHostEvent('GENERATION_ENDED', () => this.clearPending()),
             this.host.onHostEvent('GENERATION_STOPPED', () => this.clearPending()),
             this.host.onHostEvent('CHAT_CHANGED', () => {
@@ -329,7 +334,24 @@ export class WorldInfoAiRuntime {
         }
     }
 
+    onWorldInfoContractError(error) {
+        if (!this.active)
+            return;
+        this.pending = null;
+        this.mutable.warning = WORLD_INFO_CONTRACT_WARNING;
+        this.mutable.status = WORLD_INFO_CONTRACT_WARNING;
+        this.log?.warn('host.event_contract_failed', {
+            data: { operation: 'routing.apply', ...worldInfoContractFailureData(error) },
+        });
+        this.notify();
+    }
+
     async applyPending(payload) {
+        if (this.mutable.warning === WORLD_INFO_CONTRACT_WARNING) {
+            this.mutable.warning = '';
+            this.mutable.status = '宿主世界书事件已恢复，下一轮生成将重新进行 AI 判定。';
+            this.notify();
+        }
         const decision = this.pending;
         if (!decision)
             return;

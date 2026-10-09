@@ -1,7 +1,6 @@
 import { ToolkitError } from '../../kernel/errors.js';
 import { worldEntryKey } from './schema.js';
-
-const LORE_LISTS = ['globalLore', 'characterLore', 'chatLore', 'personaLore'];
+import { WORLD_INFO_LORE_LISTS } from '../../kernel/world-info.js';
 
 export function parseActivationResponse(text, candidateIds) {
     let value;
@@ -57,17 +56,13 @@ export function neutralizeAiEntryTriggers(entry) {
     };
 }
 
+// lorePayload has already passed the kernel world-info subscription boundary.
 export function applyActivationDecision(lorePayload, managedIds, selectedIds) {
     const managed = new Set(managedIds);
     const selected = new Set(selectedIds);
     const forceEntries = [];
     let suppressedCount = 0;
-    for (const listName of LORE_LISTS) {
-        const entries = lorePayload?.[listName];
-        if (!Array.isArray(entries))
-            throw new ToolkitError('HOST_EVENT_INVALID', `WORLDINFO_ENTRIES_LOADED 缺少 ${listName} 数组。`);
-    }
-    for (const listName of LORE_LISTS) {
+    for (const listName of WORLD_INFO_LORE_LISTS) {
         const entries = lorePayload[listName];
         for (let index = entries.length - 1; index >= 0; index--) {
             const entry = entries[index];

@@ -1,8 +1,7 @@
 import { ToolkitError } from '../../kernel/errors.js';
 import { sha256Hex } from '../../kernel/hash.js';
 import { uidKey } from './sources.js';
-
-export const LORE_LISTS = ['globalLore', 'characterLore', 'chatLore', 'personaLore'];
+import { WORLD_INFO_LORE_LISTS } from '../../kernel/world-info.js';
 
 export function createStagedChange({ sourceId, worldDigest, uid, contentDigest, action, dynamic }) {
     if (!['suppress', 'restore'].includes(action))
@@ -34,15 +33,14 @@ export function overrideRecordKey(record) {
     return `${record.worldDigest}:${uidKey(record.uid)}`;
 }
 
+// payload has already passed the kernel world-info subscription boundary.
 export async function filterWorldInfoPayload(payload, records) {
     const recordByKey = new Map();
     for (const record of records)
         recordByKey.set(overrideRecordKey(record), record);
     let removed = 0;
-    for (const listName of LORE_LISTS) {
-        const entries = payload?.[listName];
-        if (!Array.isArray(entries))
-            throw new ToolkitError('HOST_EVENT_INVALID', `WORLDINFO_ENTRIES_LOADED 缺少 ${listName} 数组。`);
+    for (const listName of WORLD_INFO_LORE_LISTS) {
+        const entries = payload[listName];
         for (let index = entries.length - 1; index >= 0; index--) {
             const entry = entries[index];
             if (!entry || typeof entry !== 'object')
@@ -67,7 +65,7 @@ export async function filterWorldInfoPayload(payload, records) {
 
 export async function buildOverrideLookup(groups) {
     const lookup = new Map();
-    for (const listName of LORE_LISTS) {
+    for (const listName of WORLD_INFO_LORE_LISTS) {
         for (const entry of groups?.[listName] ?? []) {
             if (!entry || typeof entry !== 'object')
                 continue;

@@ -1,5 +1,6 @@
 import { errorKind, errorMessage, ToolkitError } from '../../kernel/errors.js';
 import { sha256Hex } from '../../kernel/hash.js';
+import { WORLD_INFO_LORE_LISTS, worldInfoContractFailureData } from '../../kernel/world-info.js';
 import { LlmPresetStore } from '../../kernel/llm-presets.js';
 import { LlmTaskService } from '../../kernel/llm-tasks.js';
 import { detectPromptTemplateEntry } from './dynamic-template.js';
@@ -27,6 +28,8 @@ import {
     createWorldInfoSource,
     isConstantWorldInfoEntry,
 } from './sources.js';
+
+const WORLD_INFO_CONTRACT_WARNING = '宿主世界书事件结构无效，本轮未应用聊天屏蔽；下次生成会重新校验，持续出现请核对宿主版本。';
 
 function isAnalyzable(source) {
     return !source.suppressedForCurrentChat && !source.dynamic;
@@ -103,7 +106,10 @@ export class PromptConflictRuntime {
         this.active = true;
         this.disposers = [
             this.host.subscribePromptConflictSourceInvalidation(event => this.onSourceInvalidation(event)),
-            this.host.subscribeWorldInfoEntriesLoaded(payload => this.onWorldInfoLoaded(payload)),
+            this.host.subscribeWorldInfoEntriesLoaded(
+                payload => this.onWorldInfoLoaded(payload),
+                error => this.onWorldInfoContractError(error),
+            ),
         ];
         this.log?.info('activated');
         await this.loadFeatureSettings();
@@ -209,9 +215,23 @@ export class PromptConflictRuntime {
             void this.refresh();
     }
 
+    onWorldInfoContractError(error) {
+        if (!this.active)
+            return;
+        this.mutable.error = WORLD_INFO_CONTRACT_WARNING;
+        this.log?.warn('host.event_contract_failed', {
+            data: { operation: 'suppression.filter', ...worldInfoContractFailureData(error) },
+        });
+        this.notify();
+    }
+
     async onWorldInfoLoaded(payload) {
         if (!this.active)
             return;
+        if (this.mutable.error === WORLD_INFO_CONTRACT_WARNING) {
+            this.mutable.error = '';
+            this.notify();
+        }
         if (this.mutable.metadataError) {
             this.log?.warn('suppression.skipped_metadata_error', { data: { operation: 'suppression.filter' } });
             return;
@@ -275,7 +295,7 @@ export class PromptConflictRuntime {
             }
 
             const groups = await this.host.getMountedWorldInfoEntries();
-            for (const listName of ['globalLore', 'characterLore', 'chatLore', 'personaLore']) {
+            for (const listName of WORLD_INFO_LORE_LISTS) {
                 for (const entry of groups[listName] ?? []) {
                     if (!isConstantWorldInfoEntry(entry))
                         continue;

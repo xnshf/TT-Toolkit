@@ -1,6 +1,8 @@
 import { ToolkitError } from './errors.js';
 import { sha256Hex } from './hash.js';
 import { sameConversationIdentity } from './chat-projection.js';
+import { valueType } from './chat-diagnostics.js';
+import { WORLD_INFO_LORE_LISTS } from './world-info.js';
 const SCRIPT_URL = '/script.js';
 const CONTEXT_URL = '/scripts/st-context.js';
 const GROUP_URL = '/scripts/group-chats.js';
@@ -637,18 +639,30 @@ export class TauriTavernHost {
     }
     validateWorldInfoEntriesPayload(payload) {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload))
-            throw new ToolkitError('HOST_EVENT_INVALID', 'WORLDINFO_ENTRIES_LOADED 负载必须是对象。');
-        for (const listName of ['globalLore', 'characterLore', 'chatLore', 'personaLore']) {
+            throw new ToolkitError('HOST_EVENT_INVALID', 'WORLDINFO_ENTRIES_LOADED 负载必须是对象。', {
+                field: 'payload', expected: 'record', actualType: valueType(payload),
+            });
+        for (const listName of WORLD_INFO_LORE_LISTS) {
             if (!Array.isArray(payload[listName]))
-                throw new ToolkitError('HOST_EVENT_INVALID', `WORLDINFO_ENTRIES_LOADED 缺少 ${listName} 数组。`);
+                throw new ToolkitError('HOST_EVENT_INVALID', `WORLDINFO_ENTRIES_LOADED 缺少或包含非法 ${listName} 数组。`, {
+                    field: listName, expected: 'array', actualType: valueType(payload[listName]),
+                });
         }
         return payload;
     }
-    subscribeWorldInfoEntriesLoaded(listener) {
-        if (typeof listener !== 'function')
-            throw new TypeError('世界书条目加载订阅需要函数回调');
+    subscribeWorldInfoEntriesLoaded(listener, onContractError) {
+        if (typeof listener !== 'function' || typeof onContractError !== 'function')
+            throw new TypeError('世界书条目加载订阅需要 listener 与 onContractError 回调');
         return this.onHostEvent('WORLDINFO_ENTRIES_LOADED', payload => {
-            listener(payload);
+            let validated;
+            try {
+                validated = this.validateWorldInfoEntriesPayload(payload);
+            }
+            catch (error) {
+                return onContractError(error);
+            }
+            // The host awaits this result before scanning the same mutable arrays.
+            return listener(validated);
         });
     }
     async getMountedWorldInfoEntries() {
