@@ -89,6 +89,26 @@
   gap: 8px;
 }
 
+.wie-save-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ttk-muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.wie-save-option:hover {
+  color: var(--ttk-text);
+}
+.wie-save-option input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ttk-accent);
+  cursor: pointer;
+}
+
 /* PC 端分栏布局 */
 .wie-split-view {
   flex: 1;

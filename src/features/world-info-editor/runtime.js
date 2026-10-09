@@ -1,7 +1,16 @@
 import { errorMessage, ToolkitError } from '../../kernel/errors.js';
-import { createNewEntry, estimateTokens, getFreeWorldEntryUid, normalizeEntry } from './schema.js';
+import {
+    convertEntryUserPlaceholders,
+    createDefaultWorldInfoEditorSettings,
+    createNewEntry,
+    estimateTokens,
+    getFreeWorldEntryUid,
+    normalizeEntry,
+    parseWorldInfoEditorSettings,
+} from './schema.js';
 
 const AUTOSAVE_DEBOUNCE_MS = 1000;
+const SETTINGS_KEY = 'world-info-editor-settings-v1';
 
 export class WorldInfoEditorRuntime {
     constructor(host, log) {
@@ -12,10 +21,12 @@ export class WorldInfoEditorRuntime {
         this.pending = null;
         this.revision = 0;
         this.baseline = null;
+        this.settingsLoaded = false;
         this.state = {
             worldNames: [], activeBindings: [], selectedWorld: '', worldData: null,
             selectedUid: null, currentDraft: null, dirty: false, saveStatus: 'idle',
-            lastSavedTime: null, error: null, busy: false, searchQuery: '', filter: 'all', sort: 'order',
+            lastSavedTime: null, lastConversionCount: 0, error: null, busy: false, searchQuery: '', filter: 'all', sort: 'order',
+            settings: createDefaultWorldInfoEditorSettings(), settingsError: '',
         };
     }
 
@@ -36,12 +47,64 @@ export class WorldInfoEditorRuntime {
     }
 
     async init() {
+        if (!this.settingsLoaded)
+            await this.loadSettings();
         // Returning to the page after an unsuccessful save must not discard its draft.
         if (this.state.dirty || this.state.saveStatus === 'error') {
             this.notify();
             return;
         }
         await this.refreshWorlds();
+    }
+
+    async loadSettings() {
+        this.settingsLoaded = true;
+        try {
+            this.state.settings = parseWorldInfoEditorSettings(await this.host.globalGet(SETTINGS_KEY));
+            this.state.settingsError = '';
+        }
+        catch (error) {
+            this.state.settings = createDefaultWorldInfoEditorSettings();
+            this.state.settingsError = `世界书管理设置读取失败，已回退默认值。${errorMessage(error)}`;
+            this.log?.warn('settings.load_failed', {
+                data: { operation: 'settings.load', kind: error instanceof ToolkitError ? error.code : 'unknown' },
+            });
+        }
+    }
+
+    async setConvertUserMacro(enabled) {
+        const next = parseWorldInfoEditorSettings({ ...this.state.settings, convertUserMacro: Boolean(enabled) });
+        try {
+            await this.host.globalSet(SETTINGS_KEY, next);
+            this.state.settings = next;
+            this.state.settingsError = '';
+            this.log?.info('settings.saved', { data: { operation: 'settings.save', convertUserMacro: next.convertUserMacro } });
+        }
+        catch (error) {
+            this.log?.warn('settings.save_failed', {
+                data: { operation: 'settings.save', kind: error instanceof ToolkitError ? error.code : 'unknown' },
+            });
+            throw error;
+        }
+        finally {
+            this.notify();
+        }
+    }
+
+    async resetSettings() {
+        try {
+            await this.host.globalDelete(SETTINGS_KEY);
+        }
+        catch (error) {
+            this.log?.warn('settings.reset_failed', {
+                data: { operation: 'settings.reset', kind: error instanceof ToolkitError ? error.code : 'unknown' },
+            });
+            throw error;
+        }
+        this.state.settings = createDefaultWorldInfoEditorSettings();
+        this.state.settingsError = '';
+        this.log?.warn('settings.reset');
+        this.notify();
     }
 
     async refreshWorlds() {
@@ -92,6 +155,7 @@ export class WorldInfoEditorRuntime {
         this.state.currentDraft = raw ? structuredClone(raw) : null;
         this.state.dirty = false;
         this.state.saveStatus = 'idle';
+        this.state.lastConversionCount = 0;
         this.state.error = null;
         this.notify();
     }
@@ -170,11 +234,33 @@ export class WorldInfoEditorRuntime {
         }
     }
 
+    // 手动保存时把整个条目内的独立 user 单词归一为 {{user}} 宏；自动保存不改写正文。
+    convertManualUserPlaceholders() {
+        if (!this.state.settings.convertUserMacro)
+            return 0;
+        const { entry, count } = convertEntryUserPlaceholders(this.state.currentDraft);
+        this.state.lastConversionCount = count;
+        if (count === 0)
+            return 0;
+        this.state.currentDraft = entry;
+        this.revision++;
+        this.state.dirty = true;
+        this.state.saveStatus = 'unsaved';
+        this.log?.info('manual_save.user_macro_applied', {
+            data: { operation: 'manual_save.user_macro', convertedCount: count },
+        });
+        return count;
+    }
+
     async saveCurrentDraft({ isAuto = false } = {}) {
         this.cancelTimer();
         if (this.pending)
             await this.pending;
-        if (!this.state.dirty || !this.state.currentDraft)
+        if (!this.state.currentDraft)
+            return;
+        if (!isAuto)
+            this.convertManualUserPlaceholders();
+        if (!this.state.dirty)
             return;
         const name = this.state.selectedWorld;
         const uid = this.state.selectedUid;

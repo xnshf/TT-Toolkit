@@ -56,10 +56,11 @@ export function mountWorldInfoEditorPage(target, props) {
     function syncLiveStatus() {
         const { saveStatus, lastSavedTime, currentDraft, error } = runtime.state;
         const status = target.querySelector('.wie-status-indicator');
+        const manualLabel = `已保存 (${lastSavedTime ?? '刚刚'})${runtime.state.lastConversionCount > 0 ? ` · 已转换 ${runtime.state.lastConversionCount} 处 user` : ''}`;
         const labels = {
             unsaved: '未保存修改', saving: '正在保存...',
             saved_auto: `已自动保存 (${lastSavedTime ?? '刚刚'})`,
-            saved_manual: `已保存 (${lastSavedTime ?? '刚刚'})`, error: '保存失败',
+            saved_manual: manualLabel, error: '保存失败',
         };
         if (status) {
             status.className = `wie-status-indicator ${saveStatus === 'error' ? 'error' : saveStatus === 'unsaved' ? 'unsaved' : saveStatus === 'saving' ? 'saving' : 'saved'}`;
@@ -107,6 +108,15 @@ export function mountWorldInfoEditorPage(target, props) {
         if (runtime.state.error) {
             root.append(callout(runtime.state.error, 'danger'));
         }
+        if (runtime.state.settingsError) {
+            root.append(callout(runtime.state.settingsError, 'warning'));
+            root.append(actionButton('重置世界书管理设置', () => {
+                void run(async () => {
+                    await runtime.resetSettings();
+                    notices.show('世界书管理设置已重置。', 'success');
+                });
+            }, { className: 'secondary' }));
+        }
     }
 
     function renderTopBar() {
@@ -147,9 +157,20 @@ export function mountWorldInfoEditorPage(target, props) {
             });
         }, { className: 'secondary' });
 
+        const convertToggle = h('input', { type: 'checkbox', checked: state.settings.convertUserMacro });
+        convertToggle.addEventListener('change', () => {
+            void run(async () => {
+                await runtime.setConvertUserMacro(convertToggle.checked);
+            });
+        });
+        const convertOption = h('label', {
+            className: 'wie-save-option',
+            attrs: { title: '手动保存时把条目中独立成词的 user 替换为 {{user}}；自动保存与切换条目不改写正文。' },
+        }, convertToggle, h('span', { text: '保存时转 user 宏' }));
+
         return h('div', { className: 'wie-top-bar' },
             h('div', { className: 'wie-book-selector-group' }, select, statsEl),
-            h('div', { className: 'wie-top-actions' }, newBtn, refreshBtn),
+            h('div', { className: 'wie-top-actions' }, convertOption, newBtn, refreshBtn),
         );
     }
 
@@ -328,7 +349,7 @@ export function mountWorldInfoEditorPage(target, props) {
             statusClass = 'saved';
         }
         else if (state.saveStatus === 'saved_manual') {
-            statusText = `已保存 (${state.lastSavedTime || '刚刚'})`;
+            statusText = `已保存 (${state.lastSavedTime || '刚刚'})${state.lastConversionCount > 0 ? ` · 已转换 ${state.lastConversionCount} 处 user` : ''}`;
             statusClass = 'saved';
         }
         else if (state.saveStatus === 'error') {

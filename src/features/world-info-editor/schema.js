@@ -1,3 +1,5 @@
+import { ToolkitError } from '../../kernel/errors.js';
+
 export const SELECTIVE_LOGIC = Object.freeze({
     AND_ANY: 0,
     NOT_ALL: 1,
@@ -97,6 +99,54 @@ export function isRegexKey(key) {
     return /^\/.+\/[a-z]*$/i.test(trimmed);
 }
 
+export const USER_MACRO = '{{user}}';
+
+// 手动保存时把独立的英文单词 user (不区分大小写) 归一为 {{user}} 宏。
+// 1. {{...}} 分支整体吃掉已有宏，避免把 {{user}} 二次包裹成 {{{{user}}}}；
+// 2. <user>/</user>/<user/> 尖括号标签整体跳过，不当作占位词；
+// 3. 其余位置要求前后都不是标识符字符 [A-Za-z0-9_-]，以便保留 username、user_name、user-defined。
+const USER_PLACEHOLDER_PATTERN = /\{\{[^{}]*\}\}|<\/?user\s*\/?>|(?<![A-Za-z0-9_-])user(?![A-Za-z0-9_-])/gi;
+
+/**
+ * 将一段文本中的独立 user 单词替换为 {{user}} 宏，返回新文本与替换处数。
+ */
+export function replaceUserPlaceholder(text) {
+    if (typeof text !== 'string')
+        return { value: text, count: 0 };
+    let count = 0;
+    const value = text.replace(USER_PLACEHOLDER_PATTERN, match => {
+        if (!/^user$/i.test(match))
+            return match;
+        count++;
+        return USER_MACRO;
+    });
+    return { value, count };
+}
+
+/**
+ * 递归转换整个条目内的所有字符串字段，返回新条目与总替换处数。
+ */
+export function convertEntryUserPlaceholders(entry) {
+    let count = 0;
+    const walk = value => {
+        if (typeof value === 'string') {
+            const result = replaceUserPlaceholder(value);
+            count += result.count;
+            return result.value;
+        }
+        if (Array.isArray(value))
+            return value.map(walk);
+        if (value && typeof value === 'object') {
+            const next = {};
+            for (const [key, item] of Object.entries(value))
+                next[key] = walk(item);
+            return next;
+        }
+        return value;
+    };
+    return { entry: walk(entry), count };
+}
+
 /**
  * 分配空闲可用 UID
  */
@@ -182,4 +232,30 @@ export function projectEntrySummary(entry) {
         selective: norm.selective,
         tokenEstimate: estimateTokens(norm.content),
     };
+}
+
+const SETTINGS_KEYS = ['schemaVersion', 'convertUserMacro'];
+
+/** 世界书管理功能级设置的默认值。 */
+export function createDefaultWorldInfoEditorSettings() {
+    return { schemaVersion: 1, convertUserMacro: true };
+}
+
+/**
+ * 校验功能级设置；缺失时返回默认值，已存在但非法则拒绝解析而不猜测。
+ */
+export function parseWorldInfoEditorSettings(value) {
+    if (value === undefined || value === null)
+        return createDefaultWorldInfoEditorSettings();
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new ToolkitError('INVALID_SCHEMA', '世界书管理设置必须是对象');
+    const actual = Object.keys(value).sort();
+    const wanted = [...SETTINGS_KEYS].sort();
+    if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index]))
+        throw new ToolkitError('INVALID_SCHEMA', '世界书管理设置包含缺失或未知字段', { actual, expected: wanted });
+    if (value.schemaVersion !== 1)
+        throw new ToolkitError('UNSUPPORTED_SCHEMA', `不支持的世界书管理设置版本：${String(value.schemaVersion)}`);
+    if (typeof value.convertUserMacro !== 'boolean')
+        throw new ToolkitError('INVALID_SCHEMA', 'convertUserMacro 必须是布尔值');
+    return { schemaVersion: 1, convertUserMacro: value.convertUserMacro };
 }
