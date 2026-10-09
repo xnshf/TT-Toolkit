@@ -6,6 +6,6 @@
   "js": "index.js",
   "css": "style.css",
   "author": "TT-Toolkit Contributors",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "TauriTavern-exclusive utility toolkit."
 }

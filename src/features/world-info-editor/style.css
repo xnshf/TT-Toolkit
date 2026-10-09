@@ -29,12 +29,24 @@
 .wie-root > .feature-header h2 { font-size: 17px; }
 .wie-root > .feature-header p { margin: 2px 0; font-size: 12px; }
 .wie-root > .feature-header .eyebrow { display: none; }
-.wie-save-error:not(:empty) {
+.wie-error-bar {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 8px 12px;
   color: #ffd2ce;
   background: #351b19;
   border-bottom: 1px solid var(--ttk-danger);
+}
+.wie-error-bar.hidden {
+  display: none;
+}
+.wie-error-bar > span {
+  min-width: 0;
+  flex: 1 1 200px;
 }
 /* 顶部世界书选择与统计条 */
 .wie-top-bar {
@@ -144,7 +156,7 @@
 }
 .wie-search-box input {
   width: 100%;
-  padding: 7px 10px 7px 28px;
+  padding: 7px 34px 7px 28px;
   border: 1px solid var(--ttk-border);
   border-radius: 7px;
   background: #11120f;
@@ -161,6 +173,33 @@
   color: var(--ttk-muted);
   pointer-events: none;
   font-size: 12px;
+}
+
+/* 一键清空搜索框：有内容时才出现，占用右侧空位。 */
+.wie-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ttk-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wie-search-clear:not([hidden]) {
+  display: flex;
+}
+.wie-search-clear:hover {
+  color: var(--ttk-text);
+  background: #252620;
 }
 
 .wie-filter-chips {
@@ -424,6 +463,28 @@
   color: var(--ttk-danger);
 }
 
+/* 窄容器吸顶栏的保存状态：与详情头部同源，可点即存。 */
+.wie-mobile-save {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  max-width: 42%;
+  padding: 0 10px;
+  border: 1px solid var(--ttk-border);
+  border-radius: 8px;
+  background: var(--ttk-card);
+  color: var(--ttk-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.wie-mobile-save.wie-status-action {
+  border-color: var(--ttk-accent);
+  color: #efd07e;
+}
+
 /* 表单容器 */
 .wie-form-body {
   padding: 16px 20px 32px;
@@ -531,15 +592,36 @@
 
 /* Tag 胶囊与标签输入器 */
 .wie-tag-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 4px 6px;
   background: #11120f;
   border: 1px solid var(--ttk-border);
-  border-radius: 8px;
-  padding: 5px 8px;
+  border-radius: 7px;
+}
+
+/* 触发词列表：手机上换行而不是横向滚动，避免最后一个词被裁切。 */
+.wie-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.wie-tag-box {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 5px;
   min-height: 38px;
+  padding: 5px 8px;
+  background: #11120f;
+  border: 1px solid var(--ttk-border);
+  border-radius: 8px;
 }
 .wie-tag-box:focus-within {
   border-color: var(--ttk-accent);
@@ -575,10 +657,22 @@
 }
 
 .wie-tag-remove {
-  cursor: pointer;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   font-size: 13px;
   line-height: 1;
   opacity: 0.65;
+  cursor: pointer;
 }
 .wie-tag-remove:hover {
   opacity: 1;
@@ -636,6 +730,46 @@
   resize: vertical;
   outline: none;
   box-sizing: border-box;
+}
+
+/* 图标按钮与清空输入：移动端更容易点中，也便于清掉错误文字。 */
+.wie-icon-btn {
+  flex: 0 0 auto;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid var(--ttk-border);
+  border-radius: 7px;
+  background: #1b1c18;
+  color: var(--ttk-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wie-icon-btn:hover {
+  color: var(--ttk-text);
+  border-color: #6a695b;
+}
+
+/* 未保存修改提示可点：直接落盘，减少“到底存了没”的犹豫。 */
+.wie-status-indicator.wie-status-action {
+  cursor: pointer;
+}
+.wie-status-indicator.wie-status-action:hover {
+  text-decoration: underline;
+}
+
+/* 宏按键栏：位于正文输入框上方，软键盘从底部弹起时依然可点。 */
+.wie-macro-bar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #1b1c18;
+  border-top: 1px solid var(--ttk-border);
+  border-bottom: 1px solid var(--ttk-border);
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 /* 参数网格 */
@@ -746,6 +880,34 @@
   .wie-select {
     min-width: 100%;
   }
+
+  /* 手机触控目标：删除按钮、宏按键、标签输入多留出横向空间。 */
+  .wie-tag-remove {
+    width: 26px;
+    height: 26px;
+    font-size: 16px;
+  }
+  .wie-tag {
+    min-height: 30px;
+    gap: 4px;
+    padding: 1px 4px 1px 8px;
+  }
+  .wie-tag-input {
+    min-width: 100px;
+    min-height: 30px;
+  }
+  .wie-macro-key {
+    min-height: 38px;
+    padding: 6px 11px;
+    font-size: 12.5px;
+  }
+  .wie-macro-bar { padding: 5px 8px; }
+  .wie-zen-textarea { font-size: 15px; }
+  /* 键盘弹起时，详情区内容仍可滚到键盘上方，尾巴不被吞掉。 */
+  .workbench main.wie-detail-pane,
+  .workbench main.wie-host {
+    padding-bottom: var(--ttk-keyboard-inset, 0px);
+  }
 }
 
 /* 移动端专属模式下的子视图控制 */
@@ -797,6 +959,8 @@
   z-index: 50;
   display: flex;
   flex-direction: column;
+  /* 键盘弹起时给底部让位，输入区与宏栏不会被键盘吞没。 */
+  padding-bottom: var(--ttk-keyboard-inset, 0px);
 }
 .wie-zen-header {
   padding: 10px 14px;
@@ -806,9 +970,14 @@
   justify-content: space-between;
   background: #1b1c18;
 }
+/* Zen 内宏栏位于表头下方、输入区上方：始终在软键盘之上。 */
+.wie-zen-overlay .wie-macro-bar {
+  border-top: none;
+}
 .wie-zen-textarea {
   flex: 1;
   width: 100%;
+  min-height: 0;
   border: none;
   background: transparent;
   color: var(--ttk-text);
@@ -819,16 +988,11 @@
   font-family: inherit;
   resize: none;
   box-sizing: border-box;
-}
-.wie-zen-macro-bar {
-  padding: 8px 10px;
-  background: #1b1c18;
-  border-top: 1px solid var(--ttk-border);
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
+  /* 键盘打开时底部留白，光标所在行不会沉到键盘后面。 */
+  padding-block-end: calc(14px + var(--ttk-keyboard-inset, 0px));
 }
 .wie-macro-key {
+  flex: 0 0 auto;
   padding: 4px 8px;
   background: #252620;
   border: 1px solid var(--ttk-border);
@@ -839,4 +1003,7 @@
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
+}
+.wie-macro-key:hover {
+  border-color: var(--ttk-accent);
 }

@@ -1,6 +1,7 @@
 import { parseShellSettings, validateEntryMode } from '../kernel/settings.js';
 import { errorKind, ToolkitError } from '../kernel/errors.js';
 import { mountToolkitApp } from '../ui/main.js';
+import { installKeyboardInset } from '../ui/keyboard.js';
 
 const STYLE_URL = '/scripts/extensions/third-party/TT-Toolkit/style.css';
 const SETTINGS_KEY = 'shell-settings-v1';
@@ -124,6 +125,8 @@ export class ShellController {
   workspace;
   safeBottom = 0;
   handleViewportChange = null;
+  disposeHostKeyboardInset = null;
+  disposeFrameKeyboardInset = null;
   disposeLauncherDrag = null;
   disposeWorkspaceDrag = null;
   log;
@@ -140,6 +143,8 @@ export class ShellController {
     this.safeBottom = measureSafeBottom();
     this.handleViewportChange = () => this.syncViewport();
     window.addEventListener('resize', this.handleViewportChange);
+    // 软键盘只压缩可视视口：把被遮挡高度发布为 --ttk-keyboard-inset 供工具页避让。
+    this.disposeHostKeyboardInset = installKeyboardInset();
     for (const feature of this.features) {
       this.enabled[feature.id] = this.settings.enabledFeatures[feature.id] ?? feature.defaultEnabled;
     }
@@ -345,6 +350,8 @@ export class ShellController {
 
     const frameDocument = await frameReady;
     if (!frameDocument) throw new Error('无法访问工具箱 iframe 文档');
+    // iframe 内不宣告 interactive-widget（会与外壳固定高度冲突），只用可视视口高度避让键盘。
+    this.disposeFrameKeyboardInset = installKeyboardInset(frameDocument.documentElement);
     frameDocument.documentElement.style.background = 'transparent';
     frameDocument.body.style.cssText = 'margin:0;width:100vw;height:100dvh;overflow:hidden;background:transparent;';
     const style = frameDocument.createElement('link');
@@ -482,6 +489,10 @@ export class ShellController {
 
   dispose() {
     window.removeEventListener('resize', this.handleViewportChange);
+    this.disposeHostKeyboardInset?.();
+    this.disposeHostKeyboardInset = null;
+    this.disposeFrameKeyboardInset?.();
+    this.disposeFrameKeyboardInset = null;
     this.disposeLauncherDrag?.();
     this.disposeWorkspaceDrag?.();
     this.wandEntry?.dispose();

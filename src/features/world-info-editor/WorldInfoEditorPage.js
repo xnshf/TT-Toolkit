@@ -2,6 +2,7 @@ import { actionButton, callout, h } from '../../ui/dom.js';
 import { errorMessage } from '../../kernel/errors.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 import { confirmDanger } from '../../ui/confirm.js';
+import { scrollIntoViewAboveKeyboard } from '../../ui/keyboard.js';
 import {
     estimateTokens,
     isRegexKey,
@@ -17,6 +18,36 @@ const SOURCE_LABELS = {
     persona: '用户设定',
 };
 
+// 成对宏在存在选区时包裹选区，其余宏在选区末尾续写，避免直接冲掉已选内容。
+const PAIRED_MACROS = new Map([
+    ['[[', ['[[', ']]']],
+    ['*动作*', ['*', '*']],
+    ['"对话"', ['"', '"']],
+]);
+const EDITOR_MACROS = ['{{char}}', '{{user}}', '[[', ']]', '*动作*', '"对话"'];
+
+// 把宏按钮渲染成一行；点按时有选区则包裹选区，无选区则插入到光标处。
+function renderMacroBar(textarea, apply) {
+    const bar = h('div', { className: 'wie-macro-bar' });
+    for (const macro of EDITOR_MACROS) {
+        const key = h('button', { type: 'button', className: 'wie-macro-key', text: macro });
+        key.addEventListener('click', () => {
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const selected = textarea.value.slice(start, end);
+            const pair = PAIRED_MACROS.get(macro);
+            const insert = pair && selected ? `${pair[0]}${selected}${pair[1]}` : macro;
+            const next = `${textarea.value.slice(0, start)}${insert}${textarea.value.slice(end)}`;
+            // 包裹后仍选中原文本，方便连续套用多个宏；否则光标落在插入内容之后。
+            const caret = start + (pair && selected ? pair[0].length : insert.length);
+            const selectEnd = pair && selected ? caret + selected.length : caret;
+            apply(next, { start: caret, end: selectEnd });
+        });
+        bar.append(key);
+    }
+    return bar;
+}
+
 export function mountWorldInfoEditorPage(target, props) {
     const runtime = props.runtime;
     const view = {
@@ -25,10 +56,27 @@ export function mountWorldInfoEditorPage(target, props) {
         mobileTab: 'basic',
         zenMode: false,
         accordionOpen: false,
+        listScrollTop: 0,
+        formUid: null,
+        formRevision: -1,
+    };
+    // 触发词编辑器持有自己的输入框与列表容器，使增删词条时无需全量重绘、不中断输入法。
+    const tagRefs = { primary: null, secondary: null };
+    // 焦点变化时只保留最新一次滚动避让，避免多个定时器争抢滚动位置。
+    let cancelScroll = null;
+    const scheduleScroll = (element, options) => {
+        cancelScroll?.();
+        cancelScroll = scrollIntoViewAboveKeyboard(element, options);
     };
 
     let disposed = false;
     const notices = createNoticeController(() => render());
+
+    // 正在编辑的文本控件不得被重绘替换：移动端会因此关上键盘并丢失光标位置。
+    function isTyping() {
+        const active = target.ownerDocument.activeElement;
+        return Boolean(active && target.contains(active) && active.matches('input:not([type=checkbox]):not([type=radio]), textarea, select'));
+    }
 
     const run = async task => {
         notices.clear();
@@ -44,9 +92,7 @@ export function mountWorldInfoEditorPage(target, props) {
     target.classList.add('wie-host');
     const unsubscribe = runtime.subscribe(() => {
         if (disposed) return;
-        const active = target.ownerDocument.activeElement;
-        // Never detach a text input, textarea, select or composing IME during typing or autosave.
-        if (active && target.contains(active) && active.matches('input:not([type=checkbox]), textarea, select')) {
+        if (isTyping()) {
             syncLiveStatus();
             return;
         }
@@ -62,16 +108,40 @@ export function mountWorldInfoEditorPage(target, props) {
             saved_auto: `已自动保存 (${lastSavedTime ?? '刚刚'})`,
             saved_manual: manualLabel, error: '保存失败',
         };
+        const statusClass = saveStatus === 'error' ? 'error' : saveStatus === 'unsaved' ? 'unsaved' : saveStatus === 'saving' ? 'saving' : 'saved';
         if (status) {
-            status.className = `wie-status-indicator ${saveStatus === 'error' ? 'error' : saveStatus === 'unsaved' ? 'unsaved' : saveStatus === 'saving' ? 'saving' : 'saved'}`;
-            status.textContent = `● ${labels[saveStatus] ?? '已同步'}`;
+            status.className = `wie-status-indicator ${statusClass}${statusClass === 'unsaved' || statusClass === 'error' ? ' wie-status-action' : ''}`;
+            const label = status.lastElementChild;
+            if (label) label.textContent = labels[saveStatus] ?? '已同步';
+            status.title = statusClass === 'unsaved' || statusClass === 'error'
+                ? '点击立即保存'
+                : '自动保存不会改写正文；手动保存按设置转换 user 宏。';
         }
         const heading = target.querySelector('.wie-detail-name');
         if (heading && currentDraft) heading.textContent = currentDraft.comment || '(未命名条目)';
         const counter = target.querySelector('.wie-editor-count');
         if (counter && currentDraft) counter.textContent = `字数: ${currentDraft.content.length} · 预估 Token: ${estimateTokens(currentDraft.content)}`;
-        const warning = target.querySelector('.wie-save-error');
-        if (warning) warning.textContent = error ?? '';
+        const warning = target.querySelector('.wie-error-bar');
+        if (warning) warning.classList.toggle('hidden', !error);
+        const warningText = warning?.querySelector('span');
+        if (warningText) warningText.textContent = error ?? '';
+        // 其它入口（还原、切换条目）改动草稿后让触发词编辑器重新对齐权威草稿；
+        // 用户在触发词框内输入时不触碰 DOM，避免移动端键盘闪断。
+        if (currentDraft && (runtime.state.selectedUid !== view.formUid || runtime.revision !== view.formRevision)) {
+            view.formUid = runtime.state.selectedUid;
+            view.formRevision = runtime.revision;
+            reseedTagEditors(currentDraft);
+        }
+    }
+
+    // 按当前草稿重新渲染两个触发词编辑器，并同步它们内部的 revision 记账。
+    function reseedTagEditors(draft) {
+        for (const [slot, tags] of [['primary', draft?.key], ['secondary', draft?.keysecondary]]) {
+            const editor = tagRefs[slot];
+            if (!editor?.refresh)
+                continue;
+            editor.refresh(tags ?? [], runtime.revision);
+        }
     }
 
     // 页面初始化加载
@@ -185,7 +255,25 @@ export function mountWorldInfoEditorPage(target, props) {
             runtime.setSearchQuery(searchInput.value);
             const list = target.querySelector('.wie-card-list');
             if (list) renderCards(list);
+            updateClear();
         });
+
+        const clearBtn = h('button', {
+            type: 'button',
+            className: 'wie-search-clear',
+            text: '×',
+            attrs: { 'aria-label': '清空搜索', title: '清空搜索' },
+        });
+        clearBtn.addEventListener('click', () => {
+            searchInput.value = '';
+            runtime.setSearchQuery('');
+            const list = target.querySelector('.wie-card-list');
+            if (list) renderCards(list);
+            updateClear();
+            searchInput.focus();
+        });
+        const updateClear = () => clearBtn.toggleAttribute('hidden', !searchInput.value);
+        updateClear();
 
         const chips = [
             ['all', '全部'],
@@ -201,6 +289,7 @@ export function mountWorldInfoEditorPage(target, props) {
             h('div', { className: 'wie-search-box' },
                 h('span', { className: 'wie-search-icon', text: '🔍' }),
                 searchInput,
+                clearBtn,
             ),
             h('div', { className: 'wie-filter-chips' }, chips),
         );
@@ -290,45 +379,109 @@ export function mountWorldInfoEditorPage(target, props) {
         return card;
     }
 
-    function renderTagEditor(tags, onAdd, onRemove, isSecondary = false) {
+    // 触发词编辑器：输入框常驻，仅在增删词条时重建词条块本身。
+    function renderTagEditor(slot, tags, mutate, revision, isSecondary = false) {
         const box = h('div', { className: 'wie-tag-box' });
-        for (const [idx, tag] of tags.entries()) {
-            const isReg = isRegexKey(tag);
-            const tagEl = h('span', { className: `wie-tag${isSecondary ? ' secondary' : ''}${isReg ? ' regex' : ''}` },
-                tag,
-                isReg ? h('span', { className: 'wie-tag-regex-badge', text: 'REG' }) : null,
-            );
-            const removeBtn = h('span', { className: 'wie-tag-remove', text: '×' });
-            removeBtn.addEventListener('click', e => {
-                e.stopPropagation();
-                onRemove(idx);
-            });
-            tagEl.append(removeBtn);
-            box.append(tagEl);
-        }
-
+        const tagList = h('div', { className: 'wie-tag-list' });
         const input = h('input', {
             type: 'text',
             className: 'wie-tag-input',
             placeholder: tags.length === 0 ? '键入词按回车或逗号添加...' : '+ 添加...',
         });
+        const ref = { refresh: null };
+
+        function commit(value) {
+            const val = value.trim().replace(/^,+|[,，]+$/g, '');
+            if (!val)
+                return false;
+            const next = [...ref.tags, val];
+            mutate(next);
+            // 在重建前对齐 revision：本次变更不是“外部改动”，无需重新播种。
+            ref.revision = runtime.revision;
+            ref.tags = next;
+            ref.render();
+            return true;
+        }
+
+        // 在标签之外处理刷新：输入框不重建，移动端键盘不会闪退。
+        ref.refresh = (nextTags, nextRevision) => {
+            ref.revision = nextRevision;
+            if (JSON.stringify(nextTags ?? []) === JSON.stringify(ref.tags)) {
+                ref.render();
+                return;
+            }
+            ref.tags = [...(nextTags ?? [])];
+            ref.render();
+        };
+
+        ref.render = () => {
+            input.placeholder = ref.tags.length === 0 ? '键入词按回车或逗号添加...' : '+ 添加...';
+            tagList.replaceChildren(...ref.tags.map((tag, idx) => {
+                const isReg = isRegexKey(tag);
+                const tagEl = h('span', { className: `wie-tag${isSecondary ? ' secondary' : ''}${isReg ? ' regex' : ''}` },
+                    h('span', { text: tag }),
+                    isReg ? h('span', { className: 'wie-tag-regex-badge', text: 'REG' }) : null,
+                );
+                const removeBtn = h('button', {
+                    type: 'button',
+                    className: 'wie-tag-remove',
+                    text: '×',
+                    attrs: { 'aria-label': `删除触发词 ${tag}` },
+                });
+                removeBtn.addEventListener('click', event => {
+                    event.stopPropagation();
+                    const next = [...ref.tags];
+                    next.splice(idx, 1);
+                    mutate(next);
+                    ref.revision = runtime.revision;
+                    ref.tags = next;
+                    ref.render();
+                });
+                tagEl.append(removeBtn);
+                return tagEl;
+            }));
+        };
 
         input.addEventListener('keydown', event => {
             if (event.isComposing || event.keyCode === 229) return;
             if (event.key === ',' && input.value.startsWith('/') && !isRegexKey(input.value)) return;
             if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
                 event.preventDefault();
-                const val = input.value.trim().replace(/^,+|[，,]+$/g, '');
-                if (val) {
-                    onAdd(val);
-                    render();
-                    target.querySelectorAll('.wie-tag-input')[isSecondary ? 1 : 0]?.focus();
-                }
+                if (commit(input.value))
+                    input.value = '';
             }
         });
 
-        box.append(input);
+        // 没有键盘上的逗号/回车可用时（手机输入法），失焦即成块，避免输入被静默丢弃。
+        input.addEventListener('blur', () => {
+            if (!input.value.trim())
+                return;
+            if (commit(input.value))
+                input.value = '';
+        });
+
+        input.addEventListener('focus', () => {
+            scheduleScroll(input);
+        });
+
+        box.append(tagList, input);
+        ref.tags = [...(tags ?? [])];
+        ref.revision = revision;
+        ref.render();
+        tagRefs[slot] = ref;
         return box;
+    }
+
+    // 窄容器下详情头部被隐藏，把保存状态镜像到吸顶栏，保证手机上也能看到并发起保存。
+    function syncMobileSaveChip(statusEl) {
+        const chip = target.querySelector('.wie-mobile-save');
+        if (!chip)
+            return;
+        const source = statusEl ?? target.querySelector('.wie-status-indicator');
+        const label = chip.querySelector('.wie-mobile-save-label');
+        if (label && source) label.textContent = source.lastElementChild?.textContent ?? '';
+        chip.title = source?.title ?? '';
+        chip.className = `wie-mobile-save${source?.classList.contains('wie-status-action') ? ' wie-status-action' : ''}`;
     }
 
     function renderDetailHeader(draft) {
@@ -361,6 +514,17 @@ export function mountWorldInfoEditorPage(target, props) {
             h('span', { text: '●' }),
             h('span', { text: statusText }),
         );
+        // 自动保存与手动保存的结果不同（手动保存会按设置转换 user 宏）；
+        // 状态可点：未保存或失败时直接重试一次手动保存。
+        if (state.saveStatus === 'unsaved' || state.saveStatus === 'error') {
+            statusEl.classList.add('wie-status-action');
+            statusEl.title = '点击立即保存';
+            statusEl.addEventListener('click', () => { void saveManually(); });
+        }
+        else {
+            statusEl.title = '自动保存不会改写正文；手动保存按设置转换 user 宏。';
+        }
+        syncMobileSaveChip(statusEl);
 
         const duplicateBtn = actionButton('📋 复制', () => {
             void run(async () => {
@@ -383,10 +547,8 @@ export function mountWorldInfoEditorPage(target, props) {
         }, { className: 'danger-button' });
 
         const saveBtn = actionButton('💾 保存条目', () => {
-            void run(async () => {
-                await runtime.saveCurrentDraft({ isAuto: false });
-            });
-        }, { className: 'primary' });
+            void saveManually();
+        }, { className: 'primary', title: '手动保存；开启选项时同时把独立成词的 user 转成 {{user}}。' });
 
         return h('div', { className: 'wie-detail-header' },
             h('div', { className: 'wie-detail-title-group' },
@@ -439,19 +601,9 @@ export function mountWorldInfoEditorPage(target, props) {
         );
 
         // 主触发词 Tag 编辑器
-        const primaryTagEditor = renderTagEditor(
-            draft.key || [],
-            val => {
-                const next = [...(draft.key || []), val];
-                runtime.updateDraftField('key', next);
-            },
-            idx => {
-                const next = [...(draft.key || [])];
-                next.splice(idx, 1);
-                runtime.updateDraftField('key', next);
-            },
-            false,
-        );
+        const primaryTagEditor = renderTagEditor('primary', draft.key, next => {
+            runtime.updateDraftField('key', next);
+        }, runtime.revision, false);
 
         // 二级触发词与逻辑
         const selectiveChk = h('input', { type: 'checkbox', checked: draft.selective });
@@ -467,19 +619,9 @@ export function mountWorldInfoEditorPage(target, props) {
             runtime.updateDraftField('selectiveLogic', Number(logicSelect.value));
         });
 
-        const secTagEditor = renderTagEditor(
-            draft.keysecondary || [],
-            val => {
-                const next = [...(draft.keysecondary || []), val];
-                runtime.updateDraftField('keysecondary', next);
-            },
-            idx => {
-                const next = [...(draft.keysecondary || [])];
-                next.splice(idx, 1);
-                runtime.updateDraftField('keysecondary', next);
-            },
-            true,
-        );
+        const secTagEditor = renderTagEditor('secondary', draft.keysecondary, next => {
+            runtime.updateDraftField('keysecondary', next);
+        }, runtime.revision, true);
 
         const secBox = h('div', { style: draft.selective ? 'display: flex; flex-direction: column; gap: 8px;' : 'display: none;' },
             secTagEditor,
@@ -528,31 +670,31 @@ export function mountWorldInfoEditorPage(target, props) {
         });
         textarea.addEventListener('input', () => {
             runtime.updateDraftField('content', textarea.value);
+            scheduleScroll(textarea, { delay: 60 });
+        });
+        textarea.addEventListener('focus', () => {
+            scheduleScroll(textarea);
         });
 
-        const insertMacro = macro => {
-            const start = textarea.selectionStart;
-            const end = textarea.selectionEnd;
-            const val = textarea.value;
-            const next = val.substring(0, start) + macro + val.substring(end);
-            textarea.value = next;
-            runtime.updateDraftField('content', next);
+        // 宏按键与全屏写作共用一套宏；有选区时包裹选区而不是冲掉原文。
+        const applyMacro = (value, selection) => {
+            textarea.value = value;
+            runtime.updateDraftField('content', value);
             textarea.focus();
-            textarea.selectionStart = textarea.selectionEnd = start + macro.length;
+            textarea.setSelectionRange(selection.start, selection.end);
         };
 
         const editorWrap = h('div', { className: 'wie-editor-wrap' },
             h('div', { className: 'wie-editor-toolbar' },
                 h('div', { className: 'wie-editor-count', text: `字数: ${draft.content.length} · 预估 Token: ${estimateTokens(draft.content)}` }),
                 h('div', { className: 'wie-editor-tools' },
-                    actionButton('+ {{char}}', () => insertMacro('{{char}}'), { className: 'secondary' }),
-                    actionButton('+ {{user}}', () => insertMacro('{{user}}'), { className: 'secondary' }),
                     actionButton('⛶ 全屏写作', () => {
                         view.zenMode = true;
                         render();
                     }, { className: 'secondary' }),
                 ),
             ),
+            renderMacroBar(textarea, applyMacro),
             textarea,
         );
 
@@ -719,11 +861,10 @@ export function mountWorldInfoEditorPage(target, props) {
         const footer = h('div', { className: 'wie-form-footer' },
             actionButton('还原修改', () => {
                 runtime.revertDraft();
+                render();
             }, { className: 'secondary' }),
             actionButton('💾 立即保存', () => {
-                void run(async () => {
-                    await runtime.saveCurrentDraft({ isAuto: false });
-                });
+                void saveManually();
             }, { className: 'primary' }),
         );
 
@@ -739,24 +880,19 @@ export function mountWorldInfoEditorPage(target, props) {
         });
         textarea.addEventListener('input', () => {
             runtime.updateDraftField('content', textarea.value);
+            scheduleScroll(textarea, { delay: 60 });
+        });
+        textarea.addEventListener('focus', () => {
+            scheduleScroll(textarea);
         });
 
-        const insertMacro = val => {
-            const start = textarea.selectionStart;
-            const end = textarea.selectionEnd;
-            const text = textarea.value;
-            const next = text.substring(0, start) + val + text.substring(end);
-            textarea.value = next;
-            runtime.updateDraftField('content', next);
+        // 与普通模式同一套宏，并提供成对包裹。
+        const applyMacro = (value, selection) => {
+            textarea.value = value;
+            runtime.updateDraftField('content', value);
             textarea.focus();
-            textarea.selectionStart = textarea.selectionEnd = start + val.length;
+            textarea.setSelectionRange(selection.start, selection.end);
         };
-
-        const macros = ['{{char}}', '{{user}}', '[[', ']]', '*动作*', '"对话"'].map(macro => {
-            const keyEl = h('span', { className: 'wie-macro-key', text: macro });
-            keyEl.addEventListener('click', () => insertMacro(macro));
-            return keyEl;
-        });
 
         const header = h('div', { className: 'wie-zen-header' },
             actionButton('✕ 关闭', () => {
@@ -770,21 +906,67 @@ export function mountWorldInfoEditorPage(target, props) {
             }, { className: 'primary' }),
         );
 
+        // 宏栏放在输入区上方：软键盘从底部弹起，顶部栏始终可见可点。
         return h('div', { className: 'wie-zen-overlay' },
             header,
+            renderMacroBar(textarea, applyMacro),
             textarea,
-            h('div', { className: 'wie-zen-macro-bar' }, macros),
         );
+    }
+
+    // 手机输入法没有稳定的失焦时机：返回列表前先把未保存草稿落盘，避免静默丢失。
+    async function closeDetailView() {
+        if (runtime.state.dirty || runtime.state.saveStatus === 'error') {
+            const saved = await saveManually();
+            if (!saved)
+                return;
+        }
+        view.mobileSubView = 'list';
+        render();
+    }
+
+    async function saveManually() {
+        try {
+            await runtime.saveCurrentDraft({ isAuto: false });
+            return true;
+        }
+        catch (error) {
+            // 错误保留在 runtime.state，由顶部提示与状态区持续展示，不阻断查看列表。
+            notices.show(errorMessage(error), 'danger');
+            render();
+            return false;
+        }
+    }
+
+    // 保存失败时给出可执行的下一步：重试写入，或重新读取世界书对齐宿主状态。
+    function renderErrorBar() {
+        const state = runtime.state;
+        const bar = h('div', { className: `wie-error-bar${state.error ? '' : ' hidden'}`, attrs: { role: 'alert' } }, h('span', { text: state.error ?? '' }));
+        if (state.error) {
+            bar.append(actionButton('重试保存', () => { void saveManually(); }, { className: 'secondary' }));
+            bar.append(actionButton('重读世界书', () => {
+                void run(async () => {
+                    await runtime.refreshWorlds();
+                    notices.show('已重新读取世界书。', 'success');
+                });
+            }, { className: 'secondary' }));
+        }
+        return bar;
     }
 
     function render() {
         if (disposed)
             return;
 
+        // 重绘前记住列表滚动位置：从详情返回长列表时不应回到顶部。
+        const previousList = target.querySelector('.wie-card-list');
+        if (previousList)
+            view.listScrollTop = previousList.scrollTop;
+
         target.replaceChildren();
         const root = h('div', { className: `wie-root${view.mobileSubView === 'edit' ? ' wie-edit-view' : ''}` });
         renderHeader(root);
-        root.append(h('div', { className: 'wie-save-error', attrs: { role: 'alert' }, text: runtime.state.error ?? '' }));
+        root.append(renderErrorBar());
 
         if (!view.enabled) {
             target.append(root);
@@ -803,24 +985,29 @@ export function mountWorldInfoEditorPage(target, props) {
         const cardList = h('div', { className: 'wie-card-list' });
         renderCards(cardList);
         listPane.append(cardList);
+        // fixed 定位的工作台里，滚动位置只能靠显式恢复。
+        const restoreScroll = view.listScrollTop;
+        if (restoreScroll > 0)
+            requestAnimationFrame(() => { cardList.scrollTop = restoreScroll; });
 
         // 右侧详情区
         const detailPane = h('main', { className: 'wie-detail-pane' });
         const draft = runtime.state.currentDraft;
 
         if (draft) {
-            // 移动端返回栏
+            view.formUid = draft.uid;
+            view.formRevision = runtime.revision;
+            // 窄容器返回栏
             const mobileBackBar = h('div', { className: 'wie-mobile-view-header' },
                 actionButton('‹ 返回列表', () => {
-                    view.mobileSubView = 'list';
-                    render();
+                    closeDetailView();
                 }, { className: 'secondary' }),
                 h('strong', { style: 'font-size: 13px;', text: `#${draft.uid} ${draft.comment || ''}` }),
-                actionButton('保存', () => {
-                    void run(async () => {
-                        await runtime.saveCurrentDraft({ isAuto: false });
-                    });
-                }, { className: 'primary' }),
+                h('button', {
+                    type: 'button',
+                    className: 'wie-mobile-save',
+                    on: { click: () => { void saveManually(); } },
+                }, h('span', { className: 'wie-mobile-save-label', text: '已同步' })),
             );
 
             detailPane.append(mobileBackBar);
@@ -851,8 +1038,9 @@ export function mountWorldInfoEditorPage(target, props) {
         }
 
         target.append(root);
+        // 窄容器吸顶栏的保存状态与详情头部同源，首次渲染后同步一次。
+        syncMobileSaveChip();
     }
-
     render();
 
     return () => {
