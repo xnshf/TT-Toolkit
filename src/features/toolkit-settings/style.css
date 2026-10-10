@@ -64,7 +64,9 @@
 .ttk-settings-radio:disabled + .ttk-settings-card-body { opacity: .6; cursor: wait; }
 
 /* ---------- 主题选择（选择即生效，不进草稿保存栏） ---------- */
-.ttk-settings-theme-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 10px; }
+/* 8 套主题固定 4 列：第一行暗色、第二行亮色（先后顺序由 THEMES 决定）。
+   中等宽度降为 2 列，窄容器降为 1 列，见下方容器查询。 */
+.ttk-settings-theme-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .ttk-settings-theme { position: relative; display: flex; min-width: 0; cursor: pointer; touch-action: manipulation; }
 .ttk-settings-theme-body {
     display: grid;
@@ -126,8 +128,13 @@
 }
 
 /* 依据设置页的实际宽度，桌面窄窗口也会自动变成紧凑单列。 */
+@container ttk-settings (max-width: 900px) {
+    .ttk-settings-theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 @container ttk-settings (max-width: 620px) {
     .ttk-settings-entry-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .ttk-settings-theme-grid { grid-template-columns: minmax(0, 1fr); }
     .ttk-settings-card-body { display: grid; grid-template-columns: 42px minmax(0, 1fr) 20px; gap: 8px 12px; padding: 16px; }
     .ttk-settings-card-top { display: contents; }
     .ttk-settings-icon { grid-column: 1; grid-row: 1 / 3; }

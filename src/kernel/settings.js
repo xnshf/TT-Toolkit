@@ -2,11 +2,14 @@ import { ToolkitError } from './errors.js';
 export const ENTRY_MODES = Object.freeze(['floating', 'wand', 'both']);
 
 // 主题 id 契约由内核持有；ui/theme.js 只负责标签、说明与配色方案。
-// 与 ENTRY_MODES 同一模式：内核管 id，界面管展示。
+// 顺序：暗色在前、亮色在后，供设置页按“暗上亮下”排列。
 export const HOST_THEME_ID = 'host';
 export const DEFAULT_ENTRY_MODE = 'floating';
 export const DEFAULT_WORKSPACE_SIZE = 'standard';
-export const THEME_IDS = Object.freeze([HOST_THEME_ID, 'dawn', 'blossom', 'latte', 'slate', 'midnight', 'mocha']);
+export const THEME_IDS = Object.freeze([
+    HOST_THEME_ID, 'slate', 'midnight', 'mocha',
+    'dawn', 'blossom', 'latte', 'parchment',
+]);
 export const WORKSPACE_SIZES = Object.freeze(['compact', DEFAULT_WORKSPACE_SIZE, 'maximized']);
 
 // 主题与入口方式都是“外观/布局枚举”，取值异常只影响观感。

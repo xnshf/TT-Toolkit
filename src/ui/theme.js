@@ -1,7 +1,8 @@
 import { HOST_THEME_ID, THEME_IDS } from '../kernel/settings.js';
 
-// 主题展示元数据。id 契约在 kernel/settings.js，颜色在 ui/tokens.css。
-// 除“跟随宿主”外，调色板均取自 daisyUI 内置主题（见 docs/theme-provenance.md）。
+// 主题展示元数据。id 契约与顺序在 kernel/settings.js，颜色在 ui/tokens.css。
+// 顺序为“暗色在前、亮色在后”，设置页据此按“暗上亮下”排列。
+// 除“跟随宿主”与“羊皮纸”外，调色板均取自 daisyUI 内置主题（见 docs/theme-provenance.md）。
 // scheme 决定 iframe 内原生控件（下拉列表、滚动条）的配色；
 // 'auto' 表示跟随宿主实际明暗，由 theme-bridge 推断。
 export const THEMES = Object.freeze([
@@ -10,6 +11,24 @@ export const THEMES = Object.freeze([
         label: '跟随宿主',
         scheme: 'auto',
         description: '文字与强调色取自 TauriTavern 当前主题，表面在宿主模糊底色上分层提亮。',
+    },
+    {
+        id: 'slate',
+        label: '青灰',
+        scheme: 'dark',
+        description: '蓝灰底与柔绿强调色，对比不刺眼。',
+    },
+    {
+        id: 'midnight',
+        label: '午夜',
+        scheme: 'dark',
+        description: '藏青底与亮蓝强调色，经典工具软件观感。',
+    },
+    {
+        id: 'mocha',
+        label: '摩卡',
+        scheme: 'dark',
+        description: '紫褐底与金棕正文，暗色里最偏暖的一套。',
     },
     {
         id: 'dawn',
@@ -27,25 +46,13 @@ export const THEMES = Object.freeze([
         id: 'latte',
         label: '拿铁',
         scheme: 'light',
-        description: '奶油底与黑色强调色，对比干脆的亮色主题。',
+        description: '奶油底与黑色强调色，对比干脆。',
     },
     {
-        id: 'slate',
-        label: '青灰',
-        scheme: 'dark',
-        description: '蓝灰底与柔绿强调色，对比不刺眼的暗色主题。',
-    },
-    {
-        id: 'midnight',
-        label: '午夜',
-        scheme: 'dark',
-        description: '藏青底与亮蓝强调色，经典工具软件观感。',
-    },
-    {
-        id: 'mocha',
-        label: '摩卡',
-        scheme: 'dark',
-        description: '紫褐底与金棕正文，暗色里最偏暖的一套。',
+        id: 'parchment',
+        label: '羊皮纸',
+        scheme: 'light',
+        description: '纸张感的暖白底与暗金强调色。',
     },
 ]);
 

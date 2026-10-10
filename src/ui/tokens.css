@@ -186,6 +186,26 @@
   --ttk-info: #8ecac1;
 }
 
+/* 羊皮纸：纸张感的暖白底与暗金强调色。
+   这是唯一一套手工调校、非 daisyUI 来源的色板（daisyUI 的亮色主题底色都是中性白，
+   暖度 R-B=0，没有接近纸张感的成员）。六组对比度同样纳入 tests/theme.test.js 校验。 */
+:root[data-ttk-theme="parchment"] {
+  color-scheme: light;
+  --ttk-bg: #f6f1e6;
+  --ttk-panel: #efe8d9;
+  --ttk-card: #fbf7ee;
+  --ttk-raised: #fffaf1;
+  --ttk-inset: #e8e0cf;
+  --ttk-text: #2f2b23;
+  --ttk-accent: #8a6a1f;
+  --ttk-accent-contrast: #fff8e6;
+  --ttk-success: #3d7941;
+  --ttk-warning: #916511;
+  --ttk-danger: #b23b31;
+  --ttk-danger-contrast: #ffffff;
+  --ttk-info: #2f6b8f;
+}
+
 /* ---------- 4. 派生令牌（所有主题共用） ---------- */
 :root {
   /* 次要文字：alpha 取 70%，使浅色主题下也能达到 AA 4.5:1（62% 时最差仅 4.0:1）。 */
