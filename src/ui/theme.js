@@ -23,10 +23,10 @@ export const THEMES = Object.freeze([
         description: '纯黑表面，适合 OLED 屏幕。',
     },
     {
-        id: 'dusk',
-        label: '黄昏',
+        id: 'forest',
+        label: '深林',
         scheme: 'dark',
-        description: '暖褐色深色，延续工具箱原有的金色调性。',
+        description: '深绿色调表面与祖母绿强调色，与宿主默认主题区分明显。',
     },
     {
         id: 'parchment',

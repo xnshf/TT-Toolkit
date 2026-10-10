@@ -178,8 +178,10 @@ export function mountToolkitSettingsPage(target, { entrySettings, themeSettings 
             h('small', { text: `${saved.warning ? '已保存' : '当前生效'}：${labelFor(saved.mode)}` }),
         );
         else statusText.textContent = `${saved.warning ? '已保存，入口待恢复' : '当前生效'}：${labelFor(saved.mode)}`;
-        warning.hidden = !saved.warning;
-        warning.textContent = saved.warning || '';
+        // 入口挂载降级与设置取值回退都显示在同一块警告区，避免多处告警分散注意力。
+        const warningLines = [saved.warning, ...(saved.notices ?? [])].filter(Boolean);
+        warning.hidden = warningLines.length === 0;
+        warning.replaceChildren(...warningLines.map(text => h('p', { text })));
         themeStatusText.textContent = themeBusy ? '正在应用主题……' : `当前主题：${themeLabelFor(themeSaved)}`;
     }
 

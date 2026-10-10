@@ -1,4 +1,4 @@
-import { parseShellSettings, validateEntryMode, validateTheme } from '../kernel/settings.js';
+import { parseShellSettings, validateEntryMode, validateTheme, DEFAULT_WORKSPACE_SIZE, WORKSPACE_SIZES } from '../kernel/settings.js';
 import { errorKind, ToolkitError } from '../kernel/errors.js';
 import { mountToolkitApp } from '../ui/main.js';
 import { installKeyboardInset } from '../ui/keyboard.js';
@@ -129,6 +129,7 @@ export class ShellController {
   handleViewportChange = null;
   themeBridge = null;
   hostScheme = 'dark';
+  settingsNotices = [];
   disposeHostKeyboardInset = null;
   disposeFrameKeyboardInset = null;
   disposeLauncherDrag = null;
@@ -143,7 +144,10 @@ export class ShellController {
   }
 
   async initialize() {
-    this.settings = parseShellSettings(await this.host.globalGet(SETTINGS_KEY));
+    this.settings = parseShellSettings(
+      await this.host.globalGet(SETTINGS_KEY),
+      issue => this.reportSettingsIssue(issue),
+    );
     // 先在宿主文档写入主题，悬浮球随后挂载时就能取到正确令牌。
     // 宿主自身的 color-scheme 不改，避免影响宿主原生控件外观。
     applyThemeDocument(document, this.settings.theme, this.hostScheme, { colorScheme: false });
@@ -211,6 +215,41 @@ export class ShellController {
     });
   }
 
+  // 持久化设置里的枚举取值异常只影响外观，已由 kernel 回退到安全默认。
+  // 这里负责把它变成可定位的 warn 和用户可见提示，不假设异常内容。
+  reportSettingsIssue(issue) {
+    const messages = {
+      theme: '主题设置包含无法识别的值，已回退为“跟随宿主”。请在下方重新选择主题。',
+      entryMode: '入口方式设置包含无法识别的值，已回退为“悬浮球”。',
+      'workspace.size': '工作台尺寸档位包含无法识别的值，已回退为“标准”。',
+    };
+    const message = messages[issue.field] ?? '部分界面设置包含无法识别的值，已回退为默认值。';
+    if (!this.settingsNotices.includes(message))
+      this.settingsNotices.push(message);
+    this.log.warn('settings.value_unrecognized', {
+      data: {
+        operation: 'shell.parseSettings', phase: 'parse', sourceLocation: 'src/kernel/settings.js',
+        reasonCode: 'SETTINGS_VALUE_UNRECOGNIZED', field: issue.field, expected: issue.expected,
+        actualType: issue.actualType, fallbackUsed: issue.fallback,
+        result: 'fallback_applied', recoveryAction: 'reselect_in_settings_page',
+      },
+    });
+  }
+
+  clearSettingsNotice(field) {
+    const messages = {
+      theme: '主题设置包含无法识别的值，已回退为“跟随宿主”。请在下方重新选择主题。',
+      entryMode: '入口方式设置包含无法识别的值，已回退为“悬浮球”。',
+      'workspace.size': '工作台尺寸档位包含无法识别的值，已回退为“标准”。',
+    };
+    const message = messages[field];
+    if (!message)
+      return;
+    const index = this.settingsNotices.indexOf(message);
+    if (index >= 0)
+      this.settingsNotices.splice(index, 1);
+  }
+
   // 把主题同时写到宿主文档（悬浮球）与工作台 iframe。
   applyTheme(themeId = this.settings.theme) {
     applyThemeDocument(document, themeId, this.hostScheme, { colorScheme: false });
@@ -242,6 +281,7 @@ export class ShellController {
       throw new ToolkitError('THEME_SETTINGS_SAVE_FAILED', '主题设置保存失败，已恢复原来的主题。');
     }
     this.applyTheme(themeId);
+    this.clearSettingsNotice('theme');
     this.log.info('theme.changed', { data: { theme: themeId, result: 'applied' } });
   }
 
@@ -329,6 +369,7 @@ export class ShellController {
   async setEntryMode(mode) {
     try {
       await this.applyEntryMode(mode, true);
+      this.clearSettingsNotice('entryMode');
       this.log.info('entry.changed', { data: { entryMode: mode, result: 'applied' } });
     } catch (error) {
       this.logEntryFailure(error, 'change', 'previous_entry_retained');
@@ -419,7 +460,11 @@ export class ShellController {
       enabled: this.enabled,
       initialRoute: this.settings.lastRoute,
       entrySettings: {
-        getState: () => ({ mode: this.settings.entryMode, warning: this.entryWarning }),
+        getState: () => ({
+          mode: this.settings.entryMode,
+          warning: this.entryWarning,
+          notices: [...this.settingsNotices],
+        }),
         setMode: mode => this.setEntryMode(mode),
         resetLayout: () => this.resetLayout(),
       },
@@ -528,9 +573,9 @@ export class ShellController {
   }
 
   cycleSize() {
-    const options = ['compact', 'standard', 'maximized'];
-    const index = options.indexOf(this.settings.workspace.size);
-    this.settings.workspace.size = options[(index + 1) % options.length] ?? 'standard';
+    const index = WORKSPACE_SIZES.indexOf(this.settings.workspace.size);
+    this.settings.workspace.size = WORKSPACE_SIZES[(index + 1) % WORKSPACE_SIZES.length] ?? DEFAULT_WORKSPACE_SIZE;
+    this.clearSettingsNotice('workspace.size');
     this.applyWorkspaceSize();
     const point = clampPoint(
       { x: this.workspace.offsetLeft, y: this.workspace.offsetTop },
@@ -562,7 +607,8 @@ export class ShellController {
 
   resetLayout() {
     this.settings.launcher = { desktop: null, mobile: null };
-    this.settings.workspace = { position: null, size: 'standard' };
+    this.settings.workspace = { position: null, size: DEFAULT_WORKSPACE_SIZE };
+    this.clearSettingsNotice('workspace.size');
     const safe = clampPoint(this.launcherPoint(), LAUNCHER_SIZE, LAUNCHER_SIZE, 8, 8 + this.safeBottom);
     this.launcher.style.setProperty('left', `${safe.x}px`, 'important');
     this.launcher.style.setProperty('top', `${safe.y}px`, 'important');

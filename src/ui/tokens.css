@@ -107,23 +107,23 @@
   --ttk-info: #6fa8c9;
 }
 
-/* 黄昏：暖褐深色，保留 TT-Toolkit 原有金色调性。 */
-:root[data-ttk-theme="dusk"] {
+/* 深林：深绿色调深色，与宿主默认（灰底 + 橙强调）区分明显。 */
+:root[data-ttk-theme="forest"] {
   color-scheme: dark;
-  --ttk-bg: #171816;
-  --ttk-panel: #22231f;
-  --ttk-card: #2a2b25;
-  --ttk-card-hover: #32332c;
-  --ttk-raised: #2e2f28;
-  --ttk-inset: #11120f;
-  --ttk-text: #f4f1e8;
-  --ttk-accent: #d6a84b;
-  --ttk-accent-contrast: #1b1408;
-  --ttk-success: #6f9b67;
-  --ttk-warning: #d3a154;
-  --ttk-danger: #dc675b;
+  --ttk-bg: #0f1613;
+  --ttk-panel: #141d18;
+  --ttk-card: #1a251e;
+  --ttk-card-hover: #213027;
+  --ttk-raised: #1c2821;
+  --ttk-inset: #0a100d;
+  --ttk-text: #e2ece5;
+  --ttk-accent: #4fae7a;
+  --ttk-accent-contrast: #06170f;
+  --ttk-success: #4fae7a;
+  --ttk-warning: #d9b061;
+  --ttk-danger: #e0705f;
   --ttk-danger-contrast: #fff;
-  --ttk-info: #8dc6d8;
+  --ttk-info: #6fb3c9;
 }
 
 /* 羊皮纸：暖色浅色。 */

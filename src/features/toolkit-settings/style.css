@@ -102,6 +102,7 @@
 .ttk-settings-save:focus-visible, .ttk-settings-reset:focus-visible { outline: 2px solid var(--ttk-accent); outline-offset: 3px; }
 .ttk-settings-save:disabled, .ttk-settings-reset:disabled { cursor: wait; }
 .ttk-settings-warning { padding: 12px 14px; border: 1px solid var(--ttk-warning); border-radius: var(--ttk-radius-md); background: var(--ttk-warning-soft); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ttk-settings-warning p + p { margin-top: 6px; }
 .ttk-settings-warning[hidden], .ttk-settings-feedback:empty { display: none; }
 .ttk-settings-feedback .feature-notice { position: static; margin: 0; font-size: 13px; line-height: 1.6; }
 .ttk-settings-feedback .notice-dismiss { width: 44px; height: 44px; }
