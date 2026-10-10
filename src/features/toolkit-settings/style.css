@@ -1,6 +1,7 @@
-.workbench main:has(.ttk-settings) { color-scheme: dark; scrollbar-color: #65665b var(--ttk-bg); scrollbar-width: thin; }
+/* 设置页：主题与入口。
+   颜色全部取自 ui/tokens.css，不写死明暗，因此 6 套主题都能正确渲染。 */
+
 .ttk-settings {
-    color-scheme: dark;
     container: ttk-settings / inline-size;
     display: grid;
     gap: 24px;
@@ -18,8 +19,10 @@
 .ttk-settings-fieldset { margin: 0; padding: 0; border: 0; min-inline-size: 0; }
 .ttk-settings-fieldset legend { padding: 0; margin-bottom: 6px; }
 .ttk-settings-section-hint { color: var(--ttk-muted); font-size: 13px; line-height: 1.6; }
+
+/* ---------- 入口方式卡片 ---------- */
 .ttk-settings-entry-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
-.ttk-settings-entry { position: relative; display: flex; min-width: 0; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.ttk-settings-entry { position: relative; display: flex; min-width: 0; cursor: pointer; touch-action: manipulation; }
 .ttk-settings .ttk-settings-radio {
     position: absolute;
     width: 1px;
@@ -39,58 +42,88 @@
     min-width: 0;
     padding: 18px 16px;
     border: 1px solid var(--ttk-border);
-    border-radius: 12px;
-    background: #272822;
-    transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+    border-radius: var(--ttk-radius-md);
+    background: var(--ttk-card);
+    transition: background var(--ttk-duration-slow) var(--ttk-ease), border-color var(--ttk-duration-slow) var(--ttk-ease), box-shadow var(--ttk-duration-slow) var(--ttk-ease), transform var(--ttk-duration-slow) var(--ttk-ease);
 }
 .ttk-settings-card-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
-.ttk-settings-icon { display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 auto; border: 1px solid var(--ttk-border); border-radius: 10px; color: var(--ttk-accent); background: #1c1d18; }
+.ttk-settings-icon { display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 auto; border: 1px solid var(--ttk-border); border-radius: var(--ttk-radius-md); color: var(--ttk-accent); background: var(--ttk-inset); }
 .ttk-settings-icon svg { width: 23px; height: 23px; }
-.ttk-settings-radio-mark { width: 20px; height: 20px; flex: 0 0 auto; border: 2px solid #aaa89e; border-radius: 50%; margin-top: 2px; display: grid; place-items: center; }
-.ttk-settings-radio-mark::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #171816; opacity: 0; }
+.ttk-settings-radio-mark { width: 20px; height: 20px; flex: 0 0 auto; border: 2px solid var(--ttk-border-strong); border-radius: 50%; margin-top: 2px; display: grid; place-items: center; }
+.ttk-settings-radio-mark::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--ttk-bg); opacity: 0; }
 .ttk-settings-card-title { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; line-height: 1.5; }
 .ttk-settings-card-title strong { font-size: 15px; font-weight: 650; }
-.ttk-settings-badge { padding: 1px 6px; font-size: 11px; border: 1px solid #ffffff14; border-radius: 4px; background: #ffffff0c; color: var(--ttk-muted); white-space: nowrap; }
-.ttk-settings-badge.gold { border-color: #d6a84b4d; background: #d6a84b1c; color: var(--ttk-accent); }
+.ttk-settings-badge { padding: 1px 6px; font-size: 11px; border: 1px solid var(--ttk-border); border-radius: var(--ttk-radius-sm); background: color-mix(in srgb, var(--ttk-text) 7%, transparent); color: var(--ttk-muted); white-space: nowrap; }
+.ttk-settings-badge.gold { border-color: var(--ttk-accent-line); background: var(--ttk-accent-soft); color: var(--ttk-accent); }
 .ttk-settings-description { color: var(--ttk-muted); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
-.ttk-settings-radio:checked + .ttk-settings-card-body { border-color: var(--ttk-accent); background: #2e2c22; box-shadow: 0 0 0 1px var(--ttk-accent), 0 8px 24px #0004, 0 0 16px #d6a84b16; }
-.ttk-settings-radio:checked + .ttk-settings-card-body .ttk-settings-icon { border-color: #d6a84b66; background: #d6a84b1c; }
+.ttk-settings-radio:checked + .ttk-settings-card-body { border-color: var(--ttk-accent); background: color-mix(in srgb, var(--ttk-accent) 10%, var(--ttk-card)); box-shadow: 0 0 0 1px var(--ttk-accent), var(--ttk-shadow-md), 0 0 16px var(--ttk-accent-soft); }
+.ttk-settings-radio:checked + .ttk-settings-card-body .ttk-settings-icon { border-color: var(--ttk-accent-line); background: var(--ttk-accent-soft); }
 .ttk-settings-radio:checked + .ttk-settings-card-body .ttk-settings-radio-mark { border-color: var(--ttk-accent); background: var(--ttk-accent); }
 .ttk-settings-radio:checked + .ttk-settings-card-body .ttk-settings-radio-mark::after { opacity: 1; }
 .ttk-settings-radio:focus-visible + .ttk-settings-card-body { outline: 2px solid var(--ttk-text); outline-offset: 4px; }
 .ttk-settings-radio:disabled + .ttk-settings-card-body { opacity: .6; cursor: wait; }
 
+/* ---------- 主题选择（选择即生效，不进草稿保存栏） ---------- */
+.ttk-settings-theme-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 10px; }
+.ttk-settings-theme { position: relative; display: flex; min-width: 0; cursor: pointer; touch-action: manipulation; }
+.ttk-settings-theme-body {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    width: 100%;
+    min-width: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--ttk-border);
+    border-radius: var(--ttk-radius-md);
+    background: var(--ttk-card);
+    transition: background var(--ttk-duration) var(--ttk-ease), border-color var(--ttk-duration) var(--ttk-ease), box-shadow var(--ttk-duration) var(--ttk-ease);
+}
+.ttk-settings-theme-copy { display: block; min-width: 0; }
+.ttk-settings-theme-copy strong { display: block; font-size: 14px; font-weight: 650; }
+.ttk-settings-theme-copy small { display: block; margin-top: 3px; color: var(--ttk-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.ttk-settings-radio:checked + .ttk-settings-theme-body { border-color: var(--ttk-accent); background: color-mix(in srgb, var(--ttk-accent) 8%, var(--ttk-card)); box-shadow: 0 0 0 1px var(--ttk-accent); }
+.ttk-settings-radio:checked + .ttk-settings-theme-body .ttk-settings-radio-mark { border-color: var(--ttk-accent); background: var(--ttk-accent); }
+.ttk-settings-radio:checked + .ttk-settings-theme-body .ttk-settings-radio-mark::after { opacity: 1; }
+.ttk-settings-radio:focus-visible + .ttk-settings-theme-body { outline: 2px solid var(--ttk-text); outline-offset: 3px; }
+.ttk-settings-radio:disabled + .ttk-settings-theme-body { opacity: .6; cursor: wait; }
+.ttk-settings-theme-status { color: var(--ttk-muted); font-size: 12px; line-height: 1.6; }
+
 /* 先操作、再浏览选项；在选项区域内滚动时保存栏保持可达。 */
-.ttk-settings-action-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; padding: 12px 16px; border: 1px solid var(--ttk-border); border-radius: 10px; background: #1c1d19f5; box-shadow: 0 6px 20px #0003; backdrop-filter: blur(8px); }
+.ttk-settings-action-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; padding: 12px 16px; border: 1px solid var(--ttk-border); border-radius: var(--ttk-radius-md); background: color-mix(in srgb, var(--ttk-panel) 96%, transparent); box-shadow: var(--ttk-shadow-sm); backdrop-filter: blur(8px); }
 .ttk-settings-status { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 13px; line-height: 1.6; }
 .ttk-settings-status > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .ttk-settings-status small { display: block; color: var(--ttk-muted); font-size: 12px; }
-.ttk-settings-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #8ab480; box-shadow: 0 0 8px #8ab48044; }
-.ttk-settings-dot.pending { background: var(--ttk-accent); box-shadow: 0 0 8px #d6a84b44; }
-.ttk-settings-save, .ttk-settings-reset { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 10px 16px; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; white-space: nowrap; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; transition: background .15s ease, box-shadow .15s ease; }
-.ttk-settings-save { flex: 0 0 auto; border: 1px solid #d6a84bb3; background: linear-gradient(180deg, #745722, #584118); color: #fff; box-shadow: 0 2px 8px #0004, inset 0 1px #ffffff26; }
-.ttk-settings-save.saved { background: #252b22; border-color: #617856; color: #b5d5ae; }
+.ttk-settings-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--ttk-success); box-shadow: 0 0 8px color-mix(in srgb, var(--ttk-success) 45%, transparent); }
+.ttk-settings-dot.pending { background: var(--ttk-accent); box-shadow: 0 0 8px color-mix(in srgb, var(--ttk-accent) 45%, transparent); }
+.ttk-settings-save, .ttk-settings-reset { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 10px 16px; border-radius: var(--ttk-radius-sm); font: inherit; font-size: 14px; font-weight: 600; white-space: nowrap; cursor: pointer; touch-action: manipulation; transition: background var(--ttk-duration) var(--ttk-ease), box-shadow var(--ttk-duration) var(--ttk-ease); }
+.ttk-settings-save { flex: 0 0 auto; border: 1px solid var(--ttk-accent); background: var(--ttk-accent); color: var(--ttk-accent-contrast); box-shadow: var(--ttk-shadow-sm); }
+.ttk-settings-save.saved { background: var(--ttk-success-soft); border-color: var(--ttk-success); color: var(--ttk-success); }
 .ttk-settings-save:focus-visible, .ttk-settings-reset:focus-visible { outline: 2px solid var(--ttk-accent); outline-offset: 3px; }
 .ttk-settings-save:disabled, .ttk-settings-reset:disabled { cursor: wait; }
-.ttk-settings-warning { padding: 12px 14px; border: 1px solid #a77b35; border-radius: 10px; background: #342817; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ttk-settings-warning { padding: 12px 14px; border: 1px solid var(--ttk-warning); border-radius: var(--ttk-radius-md); background: var(--ttk-warning-soft); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .ttk-settings-warning[hidden], .ttk-settings-feedback:empty { display: none; }
 .ttk-settings-feedback .feature-notice { position: static; margin: 0; font-size: 13px; line-height: 1.6; }
 .ttk-settings-feedback .notice-dismiss { width: 44px; height: 44px; }
-.ttk-settings-tip { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border: 1px solid #3c3e34; border-radius: 10px; background: #24262099; color: var(--ttk-muted); font-size: 13px; line-height: 1.7; }
+.ttk-settings-tip { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border: 1px solid var(--ttk-border); border-radius: var(--ttk-radius-md); background: color-mix(in srgb, var(--ttk-card) 60%, transparent); color: var(--ttk-muted); font-size: 13px; line-height: 1.7; }
 .ttk-settings-tip-icon { flex: 0 0 auto; font-size: 17px; }
 .ttk-settings-tip strong { color: var(--ttk-text); font-weight: 600; }
-.ttk-settings-layout { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 20px; border: 1px solid var(--ttk-border); border-radius: 12px; background: #272822; }
+.ttk-settings-layout { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 20px; border: 1px solid var(--ttk-border); border-radius: var(--ttk-radius-md); background: var(--ttk-card); }
 .ttk-settings-layout > div { min-width: 0; }
 .ttk-settings-layout h4 { font-size: 15px; font-weight: 600; }
 .ttk-settings-layout p { margin-top: 6px; color: var(--ttk-muted); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
-.ttk-settings-reset { flex: 0 0 auto; border: 1px solid var(--ttk-border); background: #1c1d19; color: var(--ttk-text); }
+.ttk-settings-reset { flex: 0 0 auto; border: 1px solid var(--ttk-border); background: var(--ttk-inset); color: var(--ttk-text); }
 .ttk-settings-reset svg { width: 16px; height: 16px; flex: 0 0 auto; }
+
 @media (hover: hover) {
-    .ttk-settings-entry:hover .ttk-settings-radio:not(:disabled) + .ttk-settings-card-body { border-color: #7a7968; background: #2e3029; transform: translateY(-2px); }
+    .ttk-settings-entry:hover .ttk-settings-radio:not(:disabled) + .ttk-settings-card-body { border-color: var(--ttk-border-strong); background: var(--ttk-card-hover); transform: translateY(-2px); }
     .ttk-settings-entry:hover .ttk-settings-radio:checked + .ttk-settings-card-body { border-color: var(--ttk-accent); }
-    .ttk-settings-save:not(:disabled):not(.saved):hover { background: linear-gradient(180deg, #876527, #684d1c); box-shadow: 0 4px 14px #d6a84b33; }
-    .ttk-settings-reset:not(:disabled):hover { border-color: #7a7968; background: #2e3029; }
+    .ttk-settings-theme:hover .ttk-settings-radio:not(:disabled) + .ttk-settings-theme-body { border-color: var(--ttk-border-strong); background: var(--ttk-card-hover); }
+    .ttk-settings-theme:hover .ttk-settings-radio:checked + .ttk-settings-theme-body { border-color: var(--ttk-accent); }
+    .ttk-settings-save:not(:disabled):not(.saved):hover { background: color-mix(in srgb, var(--ttk-accent) 86%, var(--ttk-text)); box-shadow: var(--ttk-shadow-md); }
+    .ttk-settings-reset:not(:disabled):hover { border-color: var(--ttk-border-strong); background: var(--ttk-card-hover); }
 }
+
 /* 依据设置页的实际宽度，桌面窄窗口也会自动变成紧凑单列。 */
 @container ttk-settings (max-width: 620px) {
     .ttk-settings-entry-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
@@ -105,7 +138,8 @@
     .ttk-settings-layout { flex-direction: column; align-items: stretch; gap: 14px; padding: 16px; }
     .ttk-settings-reset { width: 100%; }
 }
+
 @media (prefers-reduced-motion: reduce) {
-    .ttk-settings-card-body, .ttk-settings-save, .ttk-settings-reset { transition: none; }
+    .ttk-settings-card-body, .ttk-settings-theme-body, .ttk-settings-save, .ttk-settings-reset { transition: none; }
     .ttk-settings-entry:hover .ttk-settings-card-body { transform: none !important; }
 }

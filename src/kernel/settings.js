@@ -1,6 +1,17 @@
 import { ToolkitError } from './errors.js';
 export const ENTRY_MODES = Object.freeze(['floating', 'wand', 'both']);
 
+// 主题 id 契约由内核持有；ui/theme.js 只负责标签、说明与配色方案。
+// 与 ENTRY_MODES 同一模式：内核管 id，界面管展示。
+export const HOST_THEME_ID = 'host';
+export const THEME_IDS = Object.freeze([HOST_THEME_ID, 'midnight', 'obsidian', 'dusk', 'parchment', 'daylight']);
+
+export function validateTheme(value) {
+    if (!THEME_IDS.includes(value))
+        throw new ToolkitError('INVALID_SCHEMA', '主题必须是已注册的主题之一。');
+    return value;
+}
+
 export function validateEntryMode(value) {
     if (!ENTRY_MODES.includes(value))
         throw new ToolkitError('INVALID_SCHEMA', '入口方式必须是悬浮球、魔棒菜单或两者。');
@@ -13,6 +24,7 @@ export function defaultShellSettings() {
         enabledFeatures: { 'developer-logs': false, 'model-settings': true, 'chat-cleaner': false, 'chat-exporter': false, 'prompt-viewer': false, 'world-info-ai': false, 'world-info-editor': true, 'prompt-conflict': false },
         lastRoute: 'overview',
         entryMode: 'floating',
+        theme: HOST_THEME_ID,
         launcher: { desktop: null, mobile: null },
         workspace: { position: null, size: 'standard' },
     };
@@ -60,6 +72,8 @@ export function parseShellSettings(value) {
         lastRoute: raw.lastRoute,
         // 已知旧版 v1 未存储 entryMode：显式补齐原有悬浮球行为，非法值不迁移。
         entryMode: Object.hasOwn(raw, 'entryMode') ? validateEntryMode(raw.entryMode) : 'floating',
+        // 同样地，旧版 v1 未存储 theme：补齐为“跟随宿主”。
+        theme: Object.hasOwn(raw, 'theme') ? validateTheme(raw.theme) : HOST_THEME_ID,
         launcher: { desktop: point(launcher.desktop), mobile: point(launcher.mobile) },
         workspace: { position: point(workspace.position), size: workspace.size },
     };

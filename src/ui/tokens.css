@@ -1,0 +1,193 @@
+/*
+ * TT-Toolkit 令牌层（阶段 0）
+ *
+ * 结构说明：
+ *   1. 结构令牌：与主题无关的圆角、阴影、动效、字体族。
+ *   2. 宿主原始令牌：在宿主文档里直接取真实变量；在工作台 iframe 里由
+ *      ui/theme-bridge.js 把读到的计算值写成内联变量覆盖这里的回退值。
+ *   3. 主题调色板：每个主题只声明“原始色”，派生色与状态色统一在文件末尾计算。
+ *
+ * 命名约定：
+ *   --ttk-*        语义令牌，功能页只用这一层，不直接写死颜色。
+ *   --ttk-host-*   宿主主题桥接通道，只由令牌层与 theme-bridge 使用。
+ */
+
+/* ---------- 1. 结构令牌（主题无关） ---------- */
+:root {
+  --ttk-radius-sm: 6px;
+  --ttk-radius-md: 10px;
+  --ttk-radius-lg: 14px;
+  --ttk-radius-pill: 999px;
+
+  --ttk-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.32);
+  --ttk-shadow-md: 0 8px 26px -10px rgb(0 0 0 / 0.5);
+  --ttk-shadow-lg: 0 24px 72px -20px rgb(0 0 0 / 0.62);
+
+  --ttk-duration: 125ms;
+  --ttk-duration-slow: 240ms;
+  --ttk-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --ttk-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ttk-font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --ttk-font-size: 14px;
+
+  /* 由外壳从顶层文档实测后覆盖（iframe 内 env() 不可靠）。 */
+  --ttk-safe-bottom: 0px;
+}
+
+/* ---------- 2. 宿主原始令牌（回退值） ---------- */
+:root {
+  --ttk-host-tint: var(--SmartThemeBlurTintColor, rgb(23, 23, 23));
+  --ttk-host-body: var(--SmartThemeBodyColor, rgb(220, 220, 210));
+  --ttk-host-muted: var(--SmartThemeEmColor, rgb(145, 145, 145));
+  --ttk-host-accent: var(--SmartThemeQuoteColor, rgb(225, 138, 36));
+  --ttk-host-font: var(--mainFontFamily, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --ttk-host-mono: var(--monoFontFamily, ui-monospace, "Cascadia Mono", Consolas, monospace);
+}
+
+/* ---------- 3. 主题调色板 ---------- */
+
+/* 跟随宿主：表面由宿主模糊底色按层级提亮，文字与强调色直接取宿主主题色。 */
+:root,
+:root[data-ttk-theme="host"] {
+  color-scheme: dark;
+  --ttk-bg: var(--ttk-host-tint);
+  --ttk-panel: color-mix(in srgb, #fff 3%, var(--ttk-host-tint));
+  --ttk-card: color-mix(in srgb, #fff 6%, var(--ttk-host-tint));
+  --ttk-card-hover: color-mix(in srgb, #fff 11%, var(--ttk-host-tint));
+  --ttk-raised: color-mix(in srgb, #fff 8%, var(--ttk-host-tint));
+  --ttk-inset: color-mix(in srgb, #000 28%, var(--ttk-host-tint));
+  --ttk-text: var(--ttk-host-body);
+  --ttk-font: var(--ttk-host-font);
+  --ttk-font-mono: var(--ttk-host-mono);
+  --ttk-accent: var(--ttk-host-accent);
+  --ttk-accent-contrast: #191308;
+  --ttk-success: #6f9b67;
+  --ttk-warning: #d3a154;
+  --ttk-danger: #dc675b;
+  --ttk-danger-contrast: #fff;
+  --ttk-info: #7fa7c4;
+}
+
+/* 午夜：冷灰蓝深色。 */
+:root[data-ttk-theme="midnight"] {
+  color-scheme: dark;
+  --ttk-bg: #12151a;
+  --ttk-panel: #171b21;
+  --ttk-card: #1d222a;
+  --ttk-card-hover: #232a33;
+  --ttk-raised: #222831;
+  --ttk-inset: #0c0f13;
+  --ttk-text: #e6e9ef;
+  --ttk-accent: #7aa2f7;
+  --ttk-accent-contrast: #0d1220;
+  --ttk-success: #6ec08a;
+  --ttk-warning: #e0af68;
+  --ttk-danger: #f7768e;
+  --ttk-danger-contrast: #2a0d12;
+  --ttk-info: #7dcfff;
+}
+
+/* 黑曜：纯黑 OLED 深色。 */
+:root[data-ttk-theme="obsidian"] {
+  color-scheme: dark;
+  --ttk-bg: #000;
+  --ttk-panel: #0a0a0a;
+  --ttk-card: #121212;
+  --ttk-card-hover: #1a1a1a;
+  --ttk-raised: #161616;
+  --ttk-inset: #000;
+  --ttk-text: #e8e8e6;
+  --ttk-accent: #d6a84b;
+  --ttk-accent-contrast: #1b1408;
+  --ttk-success: #6fbf73;
+  --ttk-warning: #d9a441;
+  --ttk-danger: #e0554a;
+  --ttk-danger-contrast: #fff;
+  --ttk-info: #6fa8c9;
+}
+
+/* 黄昏：暖褐深色，保留 TT-Toolkit 原有金色调性。 */
+:root[data-ttk-theme="dusk"] {
+  color-scheme: dark;
+  --ttk-bg: #171816;
+  --ttk-panel: #22231f;
+  --ttk-card: #2a2b25;
+  --ttk-card-hover: #32332c;
+  --ttk-raised: #2e2f28;
+  --ttk-inset: #11120f;
+  --ttk-text: #f4f1e8;
+  --ttk-accent: #d6a84b;
+  --ttk-accent-contrast: #1b1408;
+  --ttk-success: #6f9b67;
+  --ttk-warning: #d3a154;
+  --ttk-danger: #dc675b;
+  --ttk-danger-contrast: #fff;
+  --ttk-info: #8dc6d8;
+}
+
+/* 羊皮纸：暖色浅色。 */
+:root[data-ttk-theme="parchment"] {
+  color-scheme: light;
+  --ttk-bg: #f6f1e6;
+  --ttk-panel: #efe8d9;
+  --ttk-card: #fbf7ee;
+  --ttk-card-hover: #f3ecdd;
+  --ttk-raised: #fffaf1;
+  --ttk-inset: #e8e0cf;
+  --ttk-text: #2f2b23;
+  --ttk-accent: #8a6a1f;
+  --ttk-accent-contrast: #fff8e6;
+  --ttk-success: #3f7d43;
+  --ttk-warning: #9a6b12;
+  --ttk-danger: #b23b31;
+  --ttk-danger-contrast: #fff;
+  --ttk-info: #2f6b8f;
+}
+
+/* 白昼：中性浅色。 */
+:root[data-ttk-theme="daylight"] {
+  color-scheme: light;
+  --ttk-bg: #f6f7f9;
+  --ttk-panel: #eef0f3;
+  --ttk-card: #fff;
+  --ttk-card-hover: #f2f4f7;
+  --ttk-raised: #fff;
+  --ttk-inset: #e9ecf0;
+  --ttk-text: #1f2328;
+  --ttk-accent: #2563c9;
+  --ttk-accent-contrast: #fff;
+  --ttk-success: #1f7a44;
+  --ttk-warning: #9a6700;
+  --ttk-danger: #c0392b;
+  --ttk-danger-contrast: #fff;
+  --ttk-info: #0b6f9c;
+}
+
+/* ---------- 4. 派生令牌（所有主题共用） ---------- */
+:root {
+  --ttk-muted: color-mix(in srgb, var(--ttk-text) 62%, transparent);
+
+  --ttk-border: color-mix(in srgb, var(--ttk-text) 14%, transparent);
+  --ttk-border-strong: color-mix(in srgb, var(--ttk-text) 26%, transparent);
+
+  --ttk-accent-soft: color-mix(in srgb, var(--ttk-accent) 16%, transparent);
+  --ttk-accent-line: color-mix(in srgb, var(--ttk-accent) 45%, transparent);
+
+  --ttk-success-soft: color-mix(in srgb, var(--ttk-success) 15%, var(--ttk-card));
+  --ttk-warning-soft: color-mix(in srgb, var(--ttk-warning) 15%, var(--ttk-card));
+  --ttk-danger-soft: color-mix(in srgb, var(--ttk-danger) 15%, var(--ttk-card));
+  --ttk-info-soft: color-mix(in srgb, var(--ttk-info) 15%, var(--ttk-card));
+
+  --ttk-scrim: rgb(0 0 0 / 0.5);
+
+  /* 分类色：用于来源标签一类需要互相区分的场景。
+     只从语义色派生，因此浅色与深色主题都自动适用。 */
+  --ttk-chip-preset: var(--ttk-accent);
+  --ttk-chip-character: var(--ttk-success);
+  --ttk-chip-persona: var(--ttk-info);
+  --ttk-chip-world-info: color-mix(in oklab, var(--ttk-info) 55%, var(--ttk-accent));
+  --ttk-chip-chat-history: var(--ttk-text);
+  --ttk-chip-extension: var(--ttk-warning);
+  --ttk-chip-unknown: var(--ttk-text);
+}

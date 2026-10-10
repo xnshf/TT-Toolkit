@@ -1,5 +1,6 @@
 import { actionButton, h } from '../../ui/dom.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
+import { THEMES } from '../../ui/theme.js';
 
 const MODES = [
     { id: 'floating', label: '悬浮球', badge: '默认', description: '屏幕上常驻悬浮球，可自由拖动。桌面与手机分别记忆位置。', paths: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 8v8M8 12h8'] },
@@ -25,18 +26,25 @@ function icon(paths) {
     return svg;
 }
 
-export function mountToolkitSettingsPage(target, { entrySettings }) {
+export function mountToolkitSettingsPage(target, { entrySettings, themeSettings }) {
     let disposed = false;
     let busy = false;
     let savedNotice = false;
     let saved = entrySettings.getState();
     let draftMode = saved.mode;
+
+    // 主题是立即可见且易回退的纯外观选项：选择后立即应用并保存，不进入草稿。
+    let themeSaved = themeSettings.getState().theme;
+    let themeBusy = false;
+
     const labelFor = mode => MODES.find(item => item.id === mode).label;
+    const themeLabelFor = theme => THEMES.find(item => item.id === theme)?.label ?? theme;
     const feedback = h('div', { className: 'ttk-settings-feedback' });
     const warning = h('div', { className: 'ttk-settings-warning', attrs: { role: 'status' } });
     const statusText = h('span');
     const statusDot = h('span', { className: 'ttk-settings-dot', attrs: { 'aria-hidden': 'true' } });
     const status = h('div', { className: 'ttk-settings-status', attrs: { role: 'status', 'aria-live': 'polite' } }, statusDot, statusText);
+    const themeStatusText = h('span', { attrs: { role: 'status', 'aria-live': 'polite' } });
     const notices = createNoticeController(() => {
         if (!disposed) { renderNotice(); sync(); }
     });
@@ -49,13 +57,14 @@ export function mountToolkitSettingsPage(target, { entrySettings }) {
         sync();
     }, { className: 'ttk-settings-reset' });
     reset.append(icon(['M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8', 'M3 3v5h5']), h('span', { text: '重置界面布局' }));
+
     // 原生 radio + 整张 label：保留 Tab、方向键、空格与读屏语义，不模拟点击 div。
     const cards = MODES.map(mode => {
         const radio = h('input', {
             type: 'radio', name: 'ttk-entry-mode', value: mode.id, checked: mode.id === draftMode,
             className: 'ttk-settings-radio', attrs: { 'aria-label': mode.label },
             on: { change: () => {
-                if (busy || !radio.checked) return;
+                if (busy || themeBusy || !radio.checked) return;
                 draftMode = mode.id;
                 if (notices.current?.kind === 'success') { notices.clear(); renderNotice(); }
                 sync();
@@ -77,11 +86,34 @@ export function mountToolkitSettingsPage(target, { entrySettings }) {
         );
         return { label, radio };
     });
+
+    const themeCards = THEMES.map(theme => {
+        const radio = h('input', {
+            type: 'radio', name: 'ttk-theme', value: theme.id, checked: theme.id === themeSaved,
+            className: 'ttk-settings-radio', attrs: { 'aria-label': theme.label },
+            on: { change: () => {
+                if (busy || themeBusy || !radio.checked) return;
+                void selectTheme(theme.id);
+            } },
+        });
+        const label = h('label', { className: 'ttk-settings-theme', dataset: { theme: theme.id } },
+            radio,
+            h('span', { className: 'ttk-settings-theme-body' },
+                h('span', { className: 'ttk-settings-radio-mark', attrs: { 'aria-hidden': 'true' } }),
+                h('span', { className: 'ttk-settings-theme-copy' },
+                    h('strong', { text: theme.label }),
+                    h('small', { text: theme.description }),
+                ),
+            ),
+        );
+        return { label, radio, theme };
+    });
+
     const root = h('section', { className: 'feature-page ttk-settings' },
         h('header', { className: 'ttk-settings-header' },
             h('p', { className: 'eyebrow', text: '设置 / PREFERENCES' }),
             h('h2', { text: '界面与入口' }),
-            h('p', { text: '选择打开工具箱的方式，并管理工作台与悬浮球布局。' }),
+            h('p', { text: '选择打开工具箱的方式与外观主题，并管理工作台与悬浮球布局。' }),
         ),
         h('section', { className: 'ttk-settings-section' },
             h('div', { className: 'ttk-settings-action-bar' }, status, save),
@@ -99,11 +131,20 @@ export function mountToolkitSettingsPage(target, { entrySettings }) {
                 ' 它就是聊天输入框旁的扩展菜单。展开后点击“TT-Toolkit”即可打开工作台；关闭时焦点回到魔棒按钮。'),
         ),
         h('section', { className: 'ttk-settings-section' },
+            h('fieldset', { className: 'ttk-settings-fieldset' },
+                h('legend', { text: '外观主题' }),
+                h('p', { className: 'ttk-settings-section-hint', text: '选择后立即生效并保存。选择浅色主题时，工作台内的原生下拉框与滚动条也会切换为浅色。' }),
+                h('div', { className: 'ttk-settings-theme-grid', attrs: { role: 'radiogroup', 'aria-label': '外观主题' } },
+                    themeCards.map(item => item.label)),
+            ),
+            h('p', { className: 'ttk-settings-theme-status', attrs: { role: 'status', 'aria-live': 'polite' } }, themeStatusText),
+        ),
+        h('section', { className: 'ttk-settings-section' },
             h('h3', { text: '窗口与位置管理' }),
             h('div', { className: 'ttk-settings-layout' },
                 h('div', {},
                     h('h4', { text: '重置工作台与悬浮球布局' }),
-                    h('p', { text: '恢复工作台的默认位置与尺寸，将悬浮球移回默认位置。不改变入口方式或功能设置。' }),
+                    h('p', { text: '恢复工作台的默认位置与尺寸，将悬浮球移回默认位置。不改变入口方式、主题或功能设置。' }),
                 ), reset,
             ),
         ),
@@ -116,16 +157,21 @@ export function mountToolkitSettingsPage(target, { entrySettings }) {
 
     function sync() {
         const dirty = draftMode !== saved.mode;
-        root.setAttribute('aria-busy', String(busy));
+        const writing = busy || themeBusy;
+        root.setAttribute('aria-busy', String(writing));
         cards.forEach(({ radio }) => {
             radio.checked = radio.value === draftMode;
-            radio.disabled = busy;
+            radio.disabled = writing;
         });
-        save.disabled = reset.disabled = busy;
+        themeCards.forEach(({ radio }) => {
+            radio.checked = radio.value === themeSaved;
+            radio.disabled = writing;
+        });
+        save.disabled = reset.disabled = writing;
         const succeeded = savedNotice && notices.current?.kind === 'success' && !dirty;
         save.classList.toggle('saved', succeeded);
         save.textContent = busy ? '正在保存……' : succeeded ? '已保存并生效' : '保存入口设置';
-        statusDot.classList.toggle('pending', dirty || busy || Boolean(saved.warning));
+        statusDot.classList.toggle('pending', dirty || writing || Boolean(saved.warning));
         if (busy) statusText.textContent = `正在应用：${labelFor(draftMode)}`;
         else if (dirty) statusText.replaceChildren(
             h('span', { text: `已选择：${labelFor(draftMode)}（未保存）` }),
@@ -134,10 +180,11 @@ export function mountToolkitSettingsPage(target, { entrySettings }) {
         else statusText.textContent = `${saved.warning ? '已保存，入口待恢复' : '当前生效'}：${labelFor(saved.mode)}`;
         warning.hidden = !saved.warning;
         warning.textContent = saved.warning || '';
+        themeStatusText.textContent = themeBusy ? '正在应用主题……' : `当前主题：${themeLabelFor(themeSaved)}`;
     }
 
     async function apply() {
-        if (busy || disposed) return;
+        if (busy || themeBusy || disposed) return;
         busy = true;
         savedNotice = false;
         notices.clear();
@@ -158,6 +205,29 @@ export function mountToolkitSettingsPage(target, { entrySettings }) {
             notices.show(`入口切换失败：${reason}原入口已保留，当前选择尚未生效。请重试；如仍失败，请重载宿主，并在“设置 / 日志”查看入口诊断。`, 'warning');
         } finally {
             busy = false;
+            if (!disposed) { renderNotice(); sync(); }
+        }
+    }
+
+    async function selectTheme(themeId) {
+        if (busy || themeBusy || disposed || themeId === themeSaved) return;
+        const previous = themeSaved;
+        themeBusy = true;
+        // 乐观高亮：保存失败时回退，并只展示已登记的原因，不泄漏未知错误详情。
+        themeSaved = themeId;
+        notices.clear();
+        renderNotice();
+        sync();
+        try {
+            await themeSettings.setTheme(themeId);
+            if (disposed) return;
+            themeSaved = themeSettings.getState().theme;
+        } catch (error) {
+            if (disposed) return;
+            themeSaved = previous;
+            notices.show('主题切换失败：设置无法保存，已恢复原来的主题。请重试；如仍失败，请重载宿主。', 'warning');
+        } finally {
+            themeBusy = false;
             if (!disposed) { renderNotice(); sync(); }
         }
     }

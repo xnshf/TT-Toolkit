@@ -8,7 +8,7 @@
 .viewer-controls,.viewer-search-controls { display: flex; align-items: end; gap: 10px; margin-bottom: 16px; padding: 14px; border: 1px solid var(--ttk-border); border-radius: 10px; background: var(--ttk-panel); }
 .viewer-controls label { display: grid; gap: 5px; color: var(--ttk-muted); font-size: 12px; }
 .viewer-range-separator { align-self: center; color: var(--ttk-muted); }
-.viewer-controls .primary,.viewer-search-controls .primary,.viewer-card-actions .primary { border-color: #d6a84b99; background: #684f1d; }
+.viewer-controls .primary,.viewer-search-controls .primary,.viewer-card-actions .primary { border-color: var(--ttk-accent); background: var(--ttk-accent); color: var(--ttk-accent-contrast); }
 .viewer-search-input { min-width: 0; flex: 1; }
 .viewer-results-heading { display: flex; justify-content: space-between; gap: 12px; margin: 12px 0 9px; color: var(--ttk-muted); }
 .viewer-results-heading strong { color: var(--ttk-text); }
@@ -18,8 +18,8 @@
 .viewer-message-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
 .viewer-message-meta span { padding: 2px 6px; border-radius: 5px; background: var(--ttk-card); color: var(--ttk-muted); font-size: 10px; }
 .viewer-card-actions { display: flex; flex: 0 0 auto; gap: 6px; }
-.viewer-message-body { margin-top: 11px; padding: 11px; overflow-wrap: anywhere; white-space: pre-wrap; border-radius: 8px; background: #11120f; color: var(--ttk-text); font: 13px/1.55 ui-monospace,monospace; }
-.viewer-message-body mark { padding: 0 1px; border-radius: 2px; background: #f0c969; color: #17140b; }
+.viewer-message-body { margin-top: 11px; padding: 11px; overflow-wrap: anywhere; white-space: pre-wrap; border-radius: var(--ttk-radius-sm); background: var(--ttk-inset); color: var(--ttk-text); font: 13px/1.55 var(--ttk-font-mono); }
+.viewer-message-body mark { padding: 0 1px; border-radius: 2px; background: var(--ttk-accent); color: var(--ttk-accent-contrast); }
 .chat-viewer-page .pager { margin-top: 13px; }
 
 @container ttk-content (max-width:560px) {

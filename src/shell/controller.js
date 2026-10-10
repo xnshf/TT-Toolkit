@@ -1,7 +1,9 @@
-import { parseShellSettings, validateEntryMode } from '../kernel/settings.js';
+import { parseShellSettings, validateEntryMode, validateTheme } from '../kernel/settings.js';
 import { errorKind, ToolkitError } from '../kernel/errors.js';
 import { mountToolkitApp } from '../ui/main.js';
 import { installKeyboardInset } from '../ui/keyboard.js';
+import { createThemeBridge } from '../ui/theme-bridge.js';
+import { applyThemeDocument } from '../ui/theme.js';
 
 const STYLE_URL = '/scripts/extensions/third-party/TT-Toolkit/style.css';
 const SETTINGS_KEY = 'shell-settings-v1';
@@ -125,6 +127,8 @@ export class ShellController {
   workspace;
   safeBottom = 0;
   handleViewportChange = null;
+  themeBridge = null;
+  hostScheme = 'dark';
   disposeHostKeyboardInset = null;
   disposeFrameKeyboardInset = null;
   disposeLauncherDrag = null;
@@ -140,6 +144,9 @@ export class ShellController {
 
   async initialize() {
     this.settings = parseShellSettings(await this.host.globalGet(SETTINGS_KEY));
+    // 先在宿主文档写入主题，悬浮球随后挂载时就能取到正确令牌。
+    // 宿主自身的 color-scheme 不改，避免影响宿主原生控件外观。
+    applyThemeDocument(document, this.settings.theme, this.hostScheme, { colorScheme: false });
     this.safeBottom = measureSafeBottom();
     this.handleViewportChange = () => this.syncViewport();
     window.addEventListener('resize', this.handleViewportChange);
@@ -202,6 +209,40 @@ export class ShellController {
     this.log.debug('settings.saved', {
       data: { enabledFeatureCount: Object.values(this.enabled).filter(Boolean).length },
     });
+  }
+
+  // 把主题同时写到宿主文档（悬浮球）与工作台 iframe。
+  applyTheme(themeId = this.settings.theme) {
+    applyThemeDocument(document, themeId, this.hostScheme, { colorScheme: false });
+    const frameDocument = this.iframe?.contentDocument;
+    if (frameDocument)
+      applyThemeDocument(frameDocument, themeId, this.hostScheme);
+  }
+
+  // 主题是立即可见且易回退的纯外观选项，选择即保存，不进入草稿保存栏。
+  async setTheme(themeId) {
+    validateTheme(themeId);
+    const previous = this.settings.theme;
+    if (themeId === previous)
+      return;
+    this.settings.theme = themeId;
+    try {
+      await this.persist();
+    }
+    catch (error) {
+      this.settings.theme = previous;
+      this.log.warn('theme.save_failed', {
+        data: {
+          operation: 'shell.setTheme', phase: 'persist', sourceLocation: 'src/shell/controller.js',
+          reasonCode: 'THEME_SETTINGS_SAVE_FAILED', field: 'shell-settings-v1',
+          expected: 'successful-json-write', actualType: error instanceof Error ? 'Error' : typeof error,
+          result: 'previous_theme_restored', recoveryAction: 'retry_theme_selection',
+        },
+      });
+      throw new ToolkitError('THEME_SETTINGS_SAVE_FAILED', '主题设置保存失败，已恢复原来的主题。');
+    }
+    this.applyTheme(themeId);
+    this.log.info('theme.changed', { data: { theme: themeId, result: 'applied' } });
   }
 
   mountLauncher() {
@@ -350,10 +391,21 @@ export class ShellController {
 
     const frameDocument = await frameReady;
     if (!frameDocument) throw new Error('无法访问工具箱 iframe 文档');
+    // 标记工作台文档：tokens/style 里影响整体的规则只在这份文档生效，不泄漏到宿主。
+    frameDocument.documentElement.dataset.ttkSurface = 'workbench';
     // iframe 内不宣告 interactive-widget（会与外壳固定高度冲突），只用可视视口高度避让键盘。
     this.disposeFrameKeyboardInset = installKeyboardInset(frameDocument.documentElement);
     frameDocument.documentElement.style.background = 'transparent';
     frameDocument.body.style.cssText = 'margin:0;width:100vw;height:100dvh;overflow:hidden;background:transparent;';
+    // 宿主主题令牌不会跨 iframe 继承，由此处桥接到工作台文档根节点。
+    this.themeBridge = createThemeBridge(frameDocument, {
+      onSchemeChange: scheme => {
+        this.hostScheme = scheme;
+        this.applyTheme();
+      },
+    });
+    this.hostScheme = this.themeBridge.read().scheme;
+    this.applyTheme();
     const style = frameDocument.createElement('link');
     style.rel = 'stylesheet';
     style.href = STYLE_URL;
@@ -370,6 +422,10 @@ export class ShellController {
         getState: () => ({ mode: this.settings.entryMode, warning: this.entryWarning }),
         setMode: mode => this.setEntryMode(mode),
         resetLayout: () => this.resetLayout(),
+      },
+      themeSettings: {
+        getState: () => ({ theme: this.settings.theme, scheme: this.hostScheme }),
+        setTheme: theme => this.setTheme(theme),
       },
       close: () => this.closeWorkbench(),
       cycleSize: () => this.cycleSize(),
@@ -497,6 +553,8 @@ export class ShellController {
     this.disposeWorkspaceDrag?.();
     this.wandEntry?.dispose();
     this.wandEntry = null;
+    this.themeBridge?.dispose();
+    this.themeBridge = null;
     this.app?.unmount();
     this.launcher?.remove();
     this.overlay?.remove();

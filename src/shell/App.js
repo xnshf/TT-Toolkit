@@ -175,6 +175,7 @@ export class ToolkitApp {
                 enabled: Boolean(this.props.enabled[feature.id]),
                 closeWorkbench: this.props.close,
                 entrySettings: this.props.entrySettings,
+                themeSettings: this.props.themeSettings,
                 setEnabled: async value => {
                     await this.props.setFeatureEnabled(feature.id, value);
                     this.renderNavigation();
