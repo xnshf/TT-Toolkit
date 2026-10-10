@@ -23,6 +23,7 @@ TT-Toolkit 是一个只面向 [TauriTavern](https://github.com/Darkatse/TauriTav
 ### 设置
 
 - **界面与入口**：通过单选卡片选择悬浮球、魔棒菜单或两者，使用前置保存栏应用设置，支持桌面和手机布局。
+- **外观主题**：提供跟随宿主、午夜、黑曜、深林、羊皮纸、白昼六套主题，选择后立即生效并保存。跟随宿主会取用 TauriTavern 当前的文字色与强调色，并随宿主主题变化实时同步。
 - **日志**：查看、筛选和导出 TT-Toolkit 的结构化诊断日志。
 
 ### 暂时下架
@@ -34,17 +35,15 @@ TT-Toolkit 是一个只面向 [TauriTavern](https://github.com/Darkatse/TauriTav
 
 TT-Toolkit 仅支持 TauriTavern，不兼容原版 SillyTavern。
 
-1. 从本仓库下载代码压缩包并解压。
-2. 将解压后的目录命名为 `TT-Toolkit`。
-3. 把整个目录放入 TauriTavern 的第三方扩展目录：
+用 TauriTavern 的扩展安装器安装，操作方法见 [插件基础知识 → 怎样安装新插件](https://st-doc.pages.dev/extensions/basic/#install-extension)。
 
-   ```text
-   %APPDATA%\com.tauritavern.client\data\extensions\third-party\TT-Toolkit
-   ```
+安装时在插件 URL 里填本仓库地址：
 
-   确认该目录的根部直接包含 `manifest.json`、`index.js`、`style.css` 和 `src` 目录。
+```text
+https://github.com/xnshf/TT-Toolkit
+```
 
-4. 重启 TauriTavern。
+分支和标签留空即可，默认安装主分支最新版。装好后在「管理拓展」里勾选 **TT-Toolkit**。
 
 安装后，点击宿主页面中的 TT-Toolkit 悬浮入口即可打开工具箱。在 **设置 → 界面与入口** 中可切换为 **魔棒菜单** 或 **两者都显示**；保存后立即生效。魔棒入口位于聊天输入框旁的扩展菜单中，名称为 **TT-Toolkit**。
 
