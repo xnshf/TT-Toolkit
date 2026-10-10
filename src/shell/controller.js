@@ -417,7 +417,8 @@ export class ShellController {
     overlay.style.setProperty('display', 'none', 'important');
     overlay.style.setProperty('width', '100vw', 'important');
     overlay.style.setProperty('height', '100dvh', 'important');
-    overlay.style.setProperty('background', 'rgba(0, 0, 0, 0.28)', 'important');
+    // 遮罩取令牌层；样式表尚未生效时回退到同值，避免工作台背后没有遮罩。
+    overlay.style.setProperty('background', 'var(--ttk-workbench-scrim, rgb(0 0 0 / 0.32))', 'important');
 
     const iframe = document.createElement('iframe');
     iframe.id = 'tt-toolkit-frame';
