@@ -6,7 +6,7 @@ export const ENTRY_MODES = Object.freeze(['floating', 'wand', 'both']);
 export const HOST_THEME_ID = 'host';
 export const DEFAULT_ENTRY_MODE = 'floating';
 export const DEFAULT_WORKSPACE_SIZE = 'standard';
-export const THEME_IDS = Object.freeze([HOST_THEME_ID, 'midnight', 'obsidian', 'forest', 'parchment', 'daylight']);
+export const THEME_IDS = Object.freeze([HOST_THEME_ID, 'dawn', 'blossom', 'latte', 'slate', 'midnight', 'mocha']);
 export const WORKSPACE_SIZES = Object.freeze(['compact', DEFAULT_WORKSPACE_SIZE, 'maximized']);
 
 // 主题与入口方式都是“外观/布局枚举”，取值异常只影响观感。

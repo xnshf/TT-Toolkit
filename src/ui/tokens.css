@@ -1,15 +1,21 @@
 /*
- * TT-Toolkit 令牌层（阶段 0）
+ * TT-Toolkit 令牌层
  *
  * 结构说明：
  *   1. 结构令牌：与主题无关的圆角、阴影、动效、字体族。
  *   2. 宿主原始令牌：在宿主文档里直接取真实变量；在工作台 iframe 里由
  *      ui/theme-bridge.js 把读到的计算值写成内联变量覆盖这里的回退值。
- *   3. 主题调色板：每个主题只声明“原始色”，派生色与状态色统一在文件末尾计算。
+ *   3. 主题调色板：6 套取自 daisyUI 5.7.47 内置主题，色值由 oklch 精确换算为 hex。
+ *      原始 oklch 值与换算式记录在开发文档 docs/theme-provenance.md（不随插件分发）。
+ *   4. 派生令牌：所有主题共用的中间色，由主题原始色计算得出。
  *
  * 命名约定：
- *   --ttk-*        语义令牌，功能页只用这一层，不直接写死颜色。
- *   --ttk-host-*   宿主主题桥接通道，只由令牌层与 theme-bridge 使用。
+ *   --ttk-*      语义令牌，功能页只用这一层，不直接写死颜色。
+ *   --ttk-host-* 宿主主题桥接通道，只由令牌层与 theme-bridge 使用。
+ *
+ * 为什么不直接用 daisyUI 的 --color-*：那些是无命名空间的变量，
+ * 而 style.css 会被 manifest.css 注入宿主文档，写到宿主根节点上会与
+ * 宿主或其它扩展的同名变量冲突。因此这里把色值内联为 --ttk-*。
  */
 
 /* ---------- 1. 结构令牌（主题无关） ---------- */
@@ -58,7 +64,6 @@
   --ttk-bg: var(--ttk-host-tint);
   --ttk-panel: color-mix(in srgb, #fff 3%, var(--ttk-host-tint));
   --ttk-card: color-mix(in srgb, #fff 6%, var(--ttk-host-tint));
-  --ttk-card-hover: color-mix(in srgb, #fff 11%, var(--ttk-host-tint));
   --ttk-raised: color-mix(in srgb, #fff 8%, var(--ttk-host-tint));
   --ttk-inset: color-mix(in srgb, #000 28%, var(--ttk-host-tint));
   --ttk-text: var(--ttk-host-body);
@@ -73,107 +78,124 @@
   --ttk-info: #7fa7c4;
 }
 
-/* 午夜：冷灰蓝深色。 */
+/* 朝霞：调色板取自 daisyUI retro，hex 由 oklch 精确换算。原值见 docs/theme-provenance.md（开发文档，不随分发）。 */
+:root[data-ttk-theme="dawn"] {
+  color-scheme: light;
+  --ttk-bg: #e4d8b4;
+  --ttk-panel: #dbca9b;
+  --ttk-card: #ece3ca;
+  --ttk-raised: #ece3ca;
+  --ttk-inset: #dbca9b;
+  --ttk-text: #793205;
+  --ttk-accent: #ff9fa0;
+  --ttk-accent-contrast: #801518;
+  --ttk-success: #00776f;
+  --ttk-warning: #f34700;
+  --ttk-danger: #7c2808;
+  --ttk-danger-contrast: #ece3ca;
+  --ttk-info: #0082ce;
+}
+
+/* 樱雪：调色板取自 daisyUI cupcake，hex 由 oklch 精确换算。原值见 docs/theme-provenance.md（开发文档，不随分发）。 */
+:root[data-ttk-theme="blossom"] {
+  color-scheme: light;
+  --ttk-bg: #efeae6;
+  --ttk-panel: #e7e2df;
+  --ttk-card: #faf7f5;
+  --ttk-raised: #faf7f5;
+  --ttk-inset: #e7e2df;
+  --ttk-text: #291334;
+  --ttk-accent: #44ebd3;
+  --ttk-accent-contrast: #005d58;
+  --ttk-success: #00ba7b;
+  --ttk-warning: #eeaf00;
+  --ttk-danger: #4d0218;
+  --ttk-danger-contrast: #faf7f5;
+  --ttk-info: #00a4f2;
+}
+
+/* 拿铁：调色板取自 daisyUI caramellatte，hex 由 oklch 精确换算。原值见 docs/theme-provenance.md（开发文档，不随分发）。 */
+:root[data-ttk-theme="latte"] {
+  color-scheme: light;
+  --ttk-bg: #feecd3;
+  --ttk-panel: #ffd6a7;
+  --ttk-card: #fff7ed;
+  --ttk-raised: #fff7ed;
+  --ttk-inset: #ffd6a7;
+  --ttk-text: #7c2808;
+  --ttk-accent: #000000;
+  --ttk-accent-contrast: #ffffff;
+  --ttk-success: #006044;
+  --ttk-warning: #fcb700;
+  --ttk-danger: #801518;
+  --ttk-danger-contrast: #fff7ed;
+  --ttk-info: #193ab7;
+}
+
+/* 青灰：调色板取自 daisyUI dim，hex 由 oklch 精确换算。原值见 docs/theme-provenance.md（开发文档，不随分发）。 */
+:root[data-ttk-theme="slate"] {
+  color-scheme: dark;
+  --ttk-bg: #242933;
+  --ttk-panel: #20252e;
+  --ttk-card: #2a303c;
+  --ttk-raised: #2a303c;
+  --ttk-inset: #20252e;
+  --ttk-text: #b2ccd6;
+  --ttk-accent: #9fe88d;
+  --ttk-accent-contrast: #091307;
+  --ttk-success: #62efbd;
+  --ttk-warning: #efd057;
+  --ttk-danger: #ffae9b;
+  --ttk-danger-contrast: #160b09;
+  --ttk-info: #28ebff;
+}
+
+/* 午夜：调色板取自 daisyUI night，hex 由 oklch 精确换算。原值见 docs/theme-provenance.md（开发文档，不随分发）。 */
 :root[data-ttk-theme="midnight"] {
   color-scheme: dark;
-  --ttk-bg: #12151a;
-  --ttk-panel: #171b21;
-  --ttk-card: #1d222a;
-  --ttk-card-hover: #232a33;
-  --ttk-raised: #222831;
-  --ttk-inset: #0c0f13;
-  --ttk-text: #e6e9ef;
-  --ttk-accent: #7aa2f7;
-  --ttk-accent-contrast: #0d1220;
-  --ttk-success: #6ec08a;
-  --ttk-warning: #e0af68;
-  --ttk-danger: #f7768e;
-  --ttk-danger-contrast: #2a0d12;
-  --ttk-info: #7dcfff;
+  --ttk-bg: #0c1425;
+  --ttk-panel: #0a1120;
+  --ttk-card: #0f172a;
+  --ttk-raised: #0f172a;
+  --ttk-inset: #0a1120;
+  --ttk-text: #c9cbd0;
+  --ttk-accent: #3abdf7;
+  --ttk-accent-contrast: #010d15;
+  --ttk-success: #2fd4bf;
+  --ttk-warning: #f4bf51;
+  --ttk-danger: #fb7085;
+  --ttk-danger-contrast: #150406;
+  --ttk-info: #0ca5e9;
 }
 
-/* 黑曜：纯黑 OLED 深色。 */
-:root[data-ttk-theme="obsidian"] {
+/* 摩卡：调色板取自 daisyUI coffee，hex 由 oklch 精确换算。原值见 docs/theme-provenance.md（开发文档，不随分发）。 */
+:root[data-ttk-theme="mocha"] {
   color-scheme: dark;
-  --ttk-bg: #000;
-  --ttk-panel: #0a0a0a;
-  --ttk-card: #121212;
-  --ttk-card-hover: #1a1a1a;
-  --ttk-raised: #161616;
-  --ttk-inset: #000;
-  --ttk-text: #e8e8e6;
-  --ttk-accent: #d6a84b;
-  --ttk-accent-contrast: #1b1408;
-  --ttk-success: #6fbf73;
-  --ttk-warning: #d9a441;
-  --ttk-danger: #e0554a;
-  --ttk-danger-contrast: #fff;
-  --ttk-info: #6fa8c9;
-}
-
-/* 深林：深绿色调深色，与宿主默认（灰底 + 橙强调）区分明显。 */
-:root[data-ttk-theme="forest"] {
-  color-scheme: dark;
-  --ttk-bg: #0f1613;
-  --ttk-panel: #141d18;
-  --ttk-card: #1a251e;
-  --ttk-card-hover: #213027;
-  --ttk-raised: #1c2821;
-  --ttk-inset: #0a100d;
-  --ttk-text: #e2ece5;
-  --ttk-accent: #4fae7a;
-  --ttk-accent-contrast: #06170f;
-  --ttk-success: #4fae7a;
-  --ttk-warning: #d9b061;
-  --ttk-danger: #e0705f;
-  --ttk-danger-contrast: #fff;
-  --ttk-info: #6fb3c9;
-}
-
-/* 羊皮纸：暖色浅色。 */
-:root[data-ttk-theme="parchment"] {
-  color-scheme: light;
-  --ttk-bg: #f6f1e6;
-  --ttk-panel: #efe8d9;
-  --ttk-card: #fbf7ee;
-  --ttk-card-hover: #f3ecdd;
-  --ttk-raised: #fffaf1;
-  --ttk-inset: #e8e0cf;
-  --ttk-text: #2f2b23;
-  --ttk-accent: #8a6a1f;
-  --ttk-accent-contrast: #fff8e6;
-  --ttk-success: #3f7d43;
-  --ttk-warning: #9a6b12;
-  --ttk-danger: #b23b31;
-  --ttk-danger-contrast: #fff;
-  --ttk-info: #2f6b8f;
-}
-
-/* 白昼：中性浅色。 */
-:root[data-ttk-theme="daylight"] {
-  color-scheme: light;
-  --ttk-bg: #f6f7f9;
-  --ttk-panel: #eef0f3;
-  --ttk-card: #fff;
-  --ttk-card-hover: #f2f4f7;
-  --ttk-raised: #fff;
-  --ttk-inset: #e9ecf0;
-  --ttk-text: #1f2328;
-  --ttk-accent: #2563c9;
-  --ttk-accent-contrast: #fff;
-  --ttk-success: #1f7a44;
-  --ttk-warning: #9a6700;
-  --ttk-danger: #c0392b;
-  --ttk-danger-contrast: #fff;
-  --ttk-info: #0b6f9c;
+  --ttk-bg: #1e151d;
+  --ttk-panel: #120a11;
+  --ttk-card: #261b25;
+  --ttk-raised: #261b25;
+  --ttk-inset: #120a11;
+  --ttk-text: #c59f61;
+  --ttk-accent: #db924c;
+  --ttk-accent-contrast: #110802;
+  --ttk-success: #9db787;
+  --ttk-warning: #ffd260;
+  --ttk-danger: #fc9581;
+  --ttk-danger-contrast: #150806;
+  --ttk-info: #8ecac1;
 }
 
 /* ---------- 4. 派生令牌（所有主题共用） ---------- */
 :root {
-  --ttk-muted: color-mix(in srgb, var(--ttk-text) 62%, transparent);
+  /* 次要文字：alpha 取 70%，使浅色主题下也能达到 AA 4.5:1（62% 时最差仅 4.0:1）。 */
+  --ttk-muted: color-mix(in srgb, var(--ttk-text) 70%, transparent);
 
   --ttk-border: color-mix(in srgb, var(--ttk-text) 14%, transparent);
   --ttk-border-strong: color-mix(in srgb, var(--ttk-text) 26%, transparent);
+
+  /* 卡片悬浮：与文字色混合，因此浅色主题变深、深色主题变浅，无需按主题分别指定。 */
+  --ttk-card-hover: color-mix(in srgb, var(--ttk-card) 90%, var(--ttk-text));
 
   --ttk-accent-soft: color-mix(in srgb, var(--ttk-accent) 16%, transparent);
   --ttk-accent-line: color-mix(in srgb, var(--ttk-accent) 45%, transparent);
@@ -186,7 +208,7 @@
   --ttk-scrim: rgb(0 0 0 / 0.5);
 
   /* 分类色：用于来源标签一类需要互相区分的场景。
-     只从语义色派生，因此浅色与深色主题都自动适用。 */
+     只从语义色派生，因此所有主题都自动适用。 */
   --ttk-chip-preset: var(--ttk-accent);
   --ttk-chip-character: var(--ttk-success);
   --ttk-chip-persona: var(--ttk-info);

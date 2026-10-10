@@ -4,7 +4,7 @@
 .stats-grid strong { font-size: 20px; }
 .preview-list { display: grid; gap: 6px; }
 .preview-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; width: 100%; padding: 10px 12px; border: 1px solid var(--ttk-border); border-radius: 8px; background: var(--ttk-panel); color: var(--ttk-text); text-align: left; cursor: pointer; }
-.preview-row b { color: var(--ttk-accent); }
+.preview-row b { color: var(--ttk-text); }
 .diff-grid { grid-column: 1/3; display: grid; grid-template-columns: repeat(auto-fit,minmax(min(240px,100%),1fr)); gap: 8px; }
 .diff-grid pre { max-height: 220px; overflow: auto; margin: 0; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: var(--ttk-radius-sm); background: var(--ttk-inset); font: 12px/1.5 var(--ttk-font-mono); }
 .pager { display: flex; justify-content: center; align-items: center; gap: 10px; }
@@ -13,7 +13,7 @@
 .rule-heading h3 { margin: 0; }
 .rule-row { display: grid; grid-template-columns: auto minmax(100px,1fr) minmax(100px,1fr) auto auto auto; gap: 6px; align-items: center; }
 .rule-row button { padding: 7px; border: 1px solid var(--ttk-border); border-radius: 6px; background: var(--ttk-card); color: var(--ttk-text); }
-.rule-row .risk { grid-column: 2/7; color: var(--ttk-warning); }
+.rule-row .risk { grid-column: 2/7; justify-self: start; padding: 2px 8px; border: 1px solid var(--ttk-warning); border-radius: var(--ttk-radius-sm); background: var(--ttk-warning-soft); color: var(--ttk-text); font-size: 12px; }
 .status-card { display: block; }
 .status-card p { margin-bottom: 0; color: var(--ttk-muted); }
 

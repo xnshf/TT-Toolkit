@@ -1,6 +1,7 @@
 import { HOST_THEME_ID, THEME_IDS } from '../kernel/settings.js';
 
 // 主题展示元数据。id 契约在 kernel/settings.js，颜色在 ui/tokens.css。
+// 除“跟随宿主”外，调色板均取自 daisyUI 内置主题（见 docs/theme-provenance.md）。
 // scheme 决定 iframe 内原生控件（下拉列表、滚动条）的配色；
 // 'auto' 表示跟随宿主实际明暗，由 theme-bridge 推断。
 export const THEMES = Object.freeze([
@@ -11,34 +12,40 @@ export const THEMES = Object.freeze([
         description: '文字与强调色取自 TauriTavern 当前主题，表面在宿主模糊底色上分层提亮。',
     },
     {
+        id: 'dawn',
+        label: '朝霞',
+        scheme: 'light',
+        description: '暖奶油底与陶土粉强调色，偏暖的亮色主题。',
+    },
+    {
+        id: 'blossom',
+        label: '樱雪',
+        scheme: 'light',
+        description: '粉白底与薄荷强调色，柔和的亮色主题。',
+    },
+    {
+        id: 'latte',
+        label: '拿铁',
+        scheme: 'light',
+        description: '奶油底与黑色强调色，对比干脆的亮色主题。',
+    },
+    {
+        id: 'slate',
+        label: '青灰',
+        scheme: 'dark',
+        description: '蓝灰底与柔绿强调色，对比不刺眼的暗色主题。',
+    },
+    {
         id: 'midnight',
         label: '午夜',
         scheme: 'dark',
-        description: '冷灰蓝深色，适合长时间阅读。',
+        description: '藏青底与亮蓝强调色，经典工具软件观感。',
     },
     {
-        id: 'obsidian',
-        label: '黑曜',
+        id: 'mocha',
+        label: '摩卡',
         scheme: 'dark',
-        description: '纯黑表面，适合 OLED 屏幕。',
-    },
-    {
-        id: 'forest',
-        label: '深林',
-        scheme: 'dark',
-        description: '深绿色调表面与祖母绿强调色，与宿主默认主题区分明显。',
-    },
-    {
-        id: 'parchment',
-        label: '羊皮纸',
-        scheme: 'light',
-        description: '暖色浅色，接近纸张阅读感。',
-    },
-    {
-        id: 'daylight',
-        label: '白昼',
-        scheme: 'light',
-        description: '中性浅色，界面最清晰。',
+        description: '紫褐底与金棕正文，暗色里最偏暖的一套。',
     },
 ]);
 

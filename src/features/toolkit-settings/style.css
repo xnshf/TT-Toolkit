@@ -47,14 +47,14 @@
     transition: background var(--ttk-duration-slow) var(--ttk-ease), border-color var(--ttk-duration-slow) var(--ttk-ease), box-shadow var(--ttk-duration-slow) var(--ttk-ease), transform var(--ttk-duration-slow) var(--ttk-ease);
 }
 .ttk-settings-card-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
-.ttk-settings-icon { display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 auto; border: 1px solid var(--ttk-border); border-radius: var(--ttk-radius-md); color: var(--ttk-accent); background: var(--ttk-inset); }
+.ttk-settings-icon { display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 auto; border: 1px solid var(--ttk-border); border-radius: var(--ttk-radius-md); color: var(--ttk-text); background: var(--ttk-inset); }
 .ttk-settings-icon svg { width: 23px; height: 23px; }
 .ttk-settings-radio-mark { width: 20px; height: 20px; flex: 0 0 auto; border: 2px solid var(--ttk-border-strong); border-radius: 50%; margin-top: 2px; display: grid; place-items: center; }
 .ttk-settings-radio-mark::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--ttk-bg); opacity: 0; }
 .ttk-settings-card-title { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; line-height: 1.5; }
 .ttk-settings-card-title strong { font-size: 15px; font-weight: 650; }
 .ttk-settings-badge { padding: 1px 6px; font-size: 11px; border: 1px solid var(--ttk-border); border-radius: var(--ttk-radius-sm); background: color-mix(in srgb, var(--ttk-text) 7%, transparent); color: var(--ttk-muted); white-space: nowrap; }
-.ttk-settings-badge.gold { border-color: var(--ttk-accent-line); background: var(--ttk-accent-soft); color: var(--ttk-accent); }
+.ttk-settings-badge.gold { border-color: var(--ttk-accent-line); background: var(--ttk-accent-soft); color: var(--ttk-text); }
 .ttk-settings-description { color: var(--ttk-muted); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
 .ttk-settings-radio:checked + .ttk-settings-card-body { border-color: var(--ttk-accent); background: color-mix(in srgb, var(--ttk-accent) 10%, var(--ttk-card)); box-shadow: 0 0 0 1px var(--ttk-accent), var(--ttk-shadow-md), 0 0 16px var(--ttk-accent-soft); }
 .ttk-settings-radio:checked + .ttk-settings-card-body .ttk-settings-icon { border-color: var(--ttk-accent-line); background: var(--ttk-accent-soft); }
@@ -98,7 +98,7 @@
 .ttk-settings-dot.pending { background: var(--ttk-accent); box-shadow: 0 0 8px color-mix(in srgb, var(--ttk-accent) 45%, transparent); }
 .ttk-settings-save, .ttk-settings-reset { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 10px 16px; border-radius: var(--ttk-radius-sm); font: inherit; font-size: 14px; font-weight: 600; white-space: nowrap; cursor: pointer; touch-action: manipulation; transition: background var(--ttk-duration) var(--ttk-ease), box-shadow var(--ttk-duration) var(--ttk-ease); }
 .ttk-settings-save { flex: 0 0 auto; border: 1px solid var(--ttk-accent); background: var(--ttk-accent); color: var(--ttk-accent-contrast); box-shadow: var(--ttk-shadow-sm); }
-.ttk-settings-save.saved { background: var(--ttk-success-soft); border-color: var(--ttk-success); color: var(--ttk-success); }
+.ttk-settings-save.saved { background: var(--ttk-success-soft); border-color: var(--ttk-success); color: var(--ttk-text); }
 .ttk-settings-save:focus-visible, .ttk-settings-reset:focus-visible { outline: 2px solid var(--ttk-accent); outline-offset: 3px; }
 .ttk-settings-save:disabled, .ttk-settings-reset:disabled { cursor: wait; }
 .ttk-settings-warning { padding: 12px 14px; border: 1px solid var(--ttk-warning); border-radius: var(--ttk-radius-md); background: var(--ttk-warning-soft); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
