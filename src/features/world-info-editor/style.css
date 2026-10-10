@@ -229,7 +229,7 @@
   border-color: var(--ttk-border-strong);
 }
 .wie-chip.active {
-  background: rgba(214, 168, 75, 0.15);
+  background: var(--ttk-accent-soft);
   border-color: var(--ttk-accent);
   color: var(--ttk-accent);
   font-weight: 600;
@@ -274,7 +274,7 @@
 .wie-card.active {
   background: color-mix(in srgb, var(--ttk-accent) 10%, var(--ttk-card));
   border-color: var(--ttk-accent);
-  box-shadow: inset 3px 0 var(--ttk-accent), 0 3px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 3px 0 var(--ttk-accent), var(--ttk-shadow-sm);
 }
 .wie-card.disabled {
   opacity: 0.6;
@@ -336,7 +336,7 @@
 .wie-badge-constant {
   background: var(--ttk-accent-soft);
   color: var(--ttk-accent);
-  border-color: rgba(214, 168, 75, 0.4);
+  border-color: var(--ttk-accent-line);
 }
 .wie-badge-depth {
   background: color-mix(in srgb, var(--ttk-info) 22%, var(--ttk-card));
@@ -416,7 +416,7 @@
   z-index: 10;
   padding: 10px 18px;
   border-bottom: 1px solid var(--ttk-border);
-  background: rgba(29, 30, 26, 0.96);
+  background: color-mix(in srgb, var(--ttk-panel) 96%, transparent);
   backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
@@ -509,7 +509,7 @@
   align-items: center;
   justify-content: space-between;
   padding-bottom: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--ttk-border);
 }
 .wie-section-title {
   font-size: 13.5px;
@@ -575,7 +575,7 @@
   background: var(--ttk-inset);
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--ttk-border);
 }
 .wie-checkbox-label {
   display: inline-flex;
@@ -651,7 +651,7 @@
   font-size: 9px;
   font-weight: 700;
   color: var(--ttk-accent);
-  background: rgba(214, 168, 75, 0.2);
+  background: var(--ttk-accent-soft);
   padding: 0 3px;
   border-radius: 3px;
 }
@@ -823,7 +823,7 @@
   flex-direction: column;
   gap: 12px;
   padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--ttk-border);
 }
 
 /* 底部操作区 */
