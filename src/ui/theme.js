@@ -2,7 +2,8 @@ import { HOST_THEME_ID, THEME_IDS } from '../kernel/settings.js';
 
 // 主题展示元数据。id 契约与顺序在 kernel/settings.js，颜色在 ui/tokens.css。
 // 顺序为“暗色在前、亮色在后”，设置页据此按“暗上亮下”排列。
-// 除“跟随宿主”与“羊皮纸”外，调色板均取自 daisyUI 内置主题（见 docs/theme-provenance.md）。
+// 除“跟随宿主”与“羊皮纸”外，调色板均取自 daisyUI 内置主题。
+// 原值与换算式见开发文档 docs/theme-provenance.md（该目录不随插件分发）。
 // scheme 决定 iframe 内原生控件（下拉列表、滚动条）的配色；
 // 'auto' 表示跟随宿主实际明暗，由 theme-bridge 推断。
 export const THEMES = Object.freeze([
