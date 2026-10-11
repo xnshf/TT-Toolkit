@@ -25,6 +25,28 @@
     font: var(--ttk-font-size)/1.45 var(--ttk-font);
 }
 
+/* 宿主 toastr 使用插件自己的容器，位于工作台 iframe 之上，不改宿主通知容器。 */
+#tt-toolkit-export-toast {
+    position: fixed;
+    z-index: 2147483647;
+    top: max(12px, env(safe-area-inset-top));
+    left: 0;
+    right: 0;
+    pointer-events: none;
+}
+#tt-toolkit-export-toast > .toast {
+    box-sizing: border-box;
+    width: min(420px, calc(100vw - 24px));
+    margin: 0 auto 8px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    color: #fff;
+    box-shadow: 0 4px 18px rgb(0 0 0 / 0.3);
+    pointer-events: auto;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
 /* ---------- 模态确认 ---------- */
 .ttk-confirm {
     position: fixed;

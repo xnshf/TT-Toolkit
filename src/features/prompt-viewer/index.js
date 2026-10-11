@@ -8,7 +8,7 @@ export async function createPromptViewerFeature(context) {
     );
     await runtime.initialize();
     return {
-        mount: (target, props) => mountPromptViewerPage(target, { ...props, runtime }),
+        mount: (target, props) => mountPromptViewerPage(target, { ...props, runtime, exportFile: (content, filename, mimeType) => context.host.exportFile(content, filename, mimeType) }),
         activate: () => runtime.activate(),
         deactivate: () => runtime.deactivate(),
     };

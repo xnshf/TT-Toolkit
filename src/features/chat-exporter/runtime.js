@@ -1,5 +1,6 @@
 import { matchesProjectedMessageTarget, projectConversationSnapshot, sameConversationIdentity } from '../../kernel/chat-projection.js';
 import { ToolkitError, errorMessage } from '../../kernel/errors.js';
+import { logFileExportFailure } from '../../kernel/file-export.js';
 import { chatFailureData, logChatFailure, logChatProjectionIssues } from '../../kernel/chat-diagnostics.js';
 import { parseSettings as parseCleanerSettings } from '../chat-cleaner/schema.js';
 import { buildChatExportPlan } from './model.js';
@@ -212,38 +213,28 @@ export class ChatExporterRuntime {
         });
     }
 
-    downloadSuggestion(title) {
-        const plan = this.mutable.currentPlan;
-        if (!plan || this.mutable.stale) {
-            const error = new ToolkitError(plan ? 'STALE_PLAN' : 'NO_PLAN', plan ? '当前聊天或设置已变化，请重新生成预览' : '请先生成导出预览', {
-                field: 'preview', sourceLocation: 'chat-exporter/runtime.js',
-            });
-            this.reportFailure('operation.failed', 'export.suggest', error);
-            throw error;
-        }
-        return {
-            filename: chatDocumentFilename(title, plan.settings.format),
-            format: plan.settings.format,
-        };
-    }
-
-    downloaded(payload) {
-        this.mutable.status = `已导出 ${payload.stats.exportedMessages} 条消息。`;
-        this.log.info('document.saved', { data: { format: payload.format, ...payload.stats } });
+    downloaded(payload, result) {
+        this.mutable.status = result.message;
+        this.log.info(result.status === 'saved' ? 'document.saved' : result.status === 'cancelled' ? 'document.export_cancelled' : 'document.download_started', {
+            data: { format: payload.format, ...payload.stats, mode: result.mode, outcome: result.status },
+        });
         this.notify();
     }
 
-    reportFailure(event, operation, error, deduplicate = false) {
+    reportFailure(event, operation, error) {
         const recordable = error !== null && (typeof error === 'object' || typeof error === 'function');
-        if (deduplicate && recordable && this.reportedFailures.has(error))
-            return;
         logChatFailure(this.log, event, operation, error, 'chat-exporter/runtime.js');
         if (recordable)
             this.reportedFailures.add(error);
     }
 
     fileFailed(error) {
-        this.reportFailure('document.save_failed', 'export.file', error, true);
+        const recordable = error !== null && (typeof error === 'object' || typeof error === 'function');
+        if (recordable && this.reportedFailures.has(error))
+            return;
+        logFileExportFailure(this.log, 'document.save_failed', 'export.file', error, 'chat-exporter/runtime.js');
+        if (recordable)
+            this.reportedFailures.add(error);
     }
 
     settingsSummary(settings) {

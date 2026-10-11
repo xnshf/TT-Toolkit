@@ -3,12 +3,14 @@ import { sha256Hex } from './hash.js';
 import { sameConversationIdentity } from './chat-projection.js';
 import { valueType } from './chat-diagnostics.js';
 import { WORLD_INFO_LORE_LISTS } from './world-info.js';
+import { fileExportErrorKind, fileExportResult } from './file-export.js';
 const SCRIPT_URL = '/script.js';
 const CONTEXT_URL = '/scripts/st-context.js';
 const GROUP_URL = '/scripts/group-chats.js';
 const WORLD_INFO_URL = '/scripts/world-info.js';
 const OPENAI_URL = '/scripts/openai.js';
 const EXTENSIONS_URL = '/scripts/extensions.js';
+const FILE_EXPORT_URL = '/scripts/file-export.js';
 const PROMPT_CONFLICT_CHAT_NAMESPACE = 'tt-toolkit.prompt-conflict';
 const PROMPT_CONFLICT_INVALIDATION_EVENTS = [
     'SETTINGS_UPDATED', 'OAI_PRESET_CHANGED_AFTER',
@@ -166,6 +168,71 @@ export class TauriTavernHost {
             throw error;
         }
         return { element, focusTarget, dispose };
+    }
+    async exportFile(content, filename, mimeType) {
+        for (const [field, value] of Object.entries({ content, filename, mimeType })) {
+            if (typeof value !== 'string' || (field !== 'content' && !value.trim()))
+                throw new ToolkitError('FILE_EXPORT_INPUT_INVALID', '文件导出参数无效，请重新生成导出内容。', {
+                    field, expected: field === 'content' ? 'string' : 'nonempty-string', actualType: valueType(value),
+                });
+        }
+        let result;
+        try {
+            this.fileExportModule ??= await (this.dynamicImport ?? dynamicImport)(FILE_EXPORT_URL);
+        }
+        catch {
+            throw new ToolkitError('FILE_EXPORT_UNAVAILABLE', '宿主文件导出模块不可用，请检查宿主版本并重试。');
+        }
+        if (typeof this.fileExportModule?.downloadBlobWithRuntime !== 'function')
+            throw new ToolkitError('FILE_EXPORT_UNAVAILABLE', '宿主缺少文件导出函数，请检查宿主版本。');
+        try {
+            // Construct the Blob in the host realm, not the workbench iframe realm.
+            result = await this.fileExportModule.downloadBlobWithRuntime(new Blob([content], { type: mimeType }), filename);
+        }
+        catch (error) {
+            // This exact cancellation is emitted by the verified Android SAF bridge.
+            if (error?.message === 'Export destination selection cancelled') {
+                const cancelled = { status: 'cancelled', mode: 'android-document-picker', message: '已取消导出。' };
+                this.notifyFileExport(cancelled);
+                return cancelled;
+            }
+            const aborted = error?.name === 'AbortError';
+            throw new ToolkitError(aborted ? 'FILE_EXPORT_ABORTED' : 'FILE_EXPORT_FAILED', aborted
+                ? '宿主导出已中止，无法确认是否为主动取消。请检查目标位置后重试。'
+                : '宿主文件导出失败，未确认文件保存。请检查目标位置后重试。', { kind: fileExportErrorKind(error) });
+        }
+        const outcome = fileExportResult(result);
+        this.notifyFileExport(outcome);
+        return outcome;
+    }
+    notifyFileExport(outcome) {
+        const method = outcome.status === 'saved' ? 'success' : 'info';
+        if (typeof window.toastr?.[method] !== 'function')
+            return;
+        try {
+            const overlay = document.getElementById('tt-toolkit-overlay');
+            const target = overlay && overlay.style.display !== 'none' ? overlay : document.body;
+            const container = document.getElementById('tt-toolkit-export-toast');
+            if (container && container.parentElement !== target)
+                target.append(container);
+            window.toastr[method](outcome.message, 'TT-Toolkit 文件导出', {
+                target: target.id === 'tt-toolkit-overlay' ? '#tt-toolkit-overlay' : 'body',
+                containerId: 'tt-toolkit-export-toast',
+                positionClass: 'toast-top-center',
+                escapeHtml: true,
+                debug: false,
+                timeOut: 4500,
+                // Do not run the host's default callback that relocates its own toast container.
+                onHidden: () => {},
+            });
+        }
+        catch (error) {
+            this.log?.warn('export.notification_failed', { data: {
+                operation: 'export.notify', stage: 'export.notification', reason: 'host-toast-rejected',
+                kind: fileExportErrorKind(error), sourceLocation: 'kernel/host.js:notifyFileExport',
+                outcome: 'page-feedback-only', nextAction: 'read-page-feedback',
+            } });
+        }
     }
     async globalGet(key) {
         const result = await this.abi.api.extension.store.tryGetJson({ namespace: this.namespace, key });

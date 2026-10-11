@@ -97,6 +97,7 @@ export function mountPromptViewerPage(target, props) {
         snapshotKey: null,
         input: '',
         notice: '',
+        exporting: false,
     };
     let disposed = false;
 
@@ -125,28 +126,28 @@ export function mountPromptViewerPage(target, props) {
         view.notice = '已复制实际发送的 messages 数组。';
     }
 
-    function downloadCurrent() {
+    async function downloadCurrent() {
+        if (view.exporting)
+            return;
+        const kind = view.tab;
         const snapshot = currentSnapshot();
-        if (!snapshot)
-            throw new ToolkitError('PROMPT_VIEWER_NO_SNAPSHOT', '当前没有可下载的内容。');
-        const text = runtime.exportText(view.tab);
-        const document = target.ownerDocument;
-        const window = document.defaultView ?? globalThis;
-        const BlobCtor = window.Blob ?? Blob;
-        const URLCtor = window.URL ?? URL;
-        const url = URLCtor.createObjectURL(new BlobCtor([text], { type: 'text/plain;charset=utf-8' }));
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = promptDocumentFilename(view.tab);
-        link.style.display = 'none';
-        document.body.append(link);
-        link.click();
-        window.setTimeout(() => {
-            link.remove();
-            URLCtor.revokeObjectURL(url);
-        }, 1000);
-        runtime.logExport(view.tab, 'download', snapshot.items.length);
-        view.notice = `已下载 ${link.download}。`;
+        view.exporting = true;
+        render();
+        try {
+            if (!snapshot)
+                throw new ToolkitError('PROMPT_VIEWER_NO_SNAPSHOT', '当前没有可下载的内容。');
+            const text = runtime.exportText(kind);
+            const result = await props.exportFile(text, promptDocumentFilename(kind), 'text/plain;charset=utf-8');
+            runtime.logExport(kind, 'download', snapshot.items.length, result.status);
+            view.notice = result.message;
+        }
+        catch (error) {
+            runtime.fileFailed(error);
+            throw error;
+        }
+        finally {
+            view.exporting = false;
+        }
     }
 
     function renderHeader(root) {
@@ -279,7 +280,7 @@ export function mountPromptViewerPage(target, props) {
             actionButton('全部展开', () => { view.expandAll = 'full'; view.itemStates = new Map(); render(); }, { className: 'secondary', disabled: items.length === 0 }),
             actionButton('全部折叠', () => { view.expandAll = 'hidden'; view.itemStates = new Map(); render(); }, { className: 'secondary', disabled: items.length === 0 }),
             actionButton('复制提示词', () => { void run(copyCurrent); }, { className: 'secondary', disabled: !snapshot }),
-            actionButton('下载 .txt', () => { void run(async () => downloadCurrent()); }, { className: 'primary', disabled: !snapshot }),
+            actionButton('下载 .txt', () => { void run(downloadCurrent); }, { className: 'primary', disabled: !snapshot || view.exporting }),
         ));
     }
 

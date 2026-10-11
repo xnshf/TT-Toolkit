@@ -2,7 +2,6 @@ import { errorMessage } from '../../kernel/errors.js';
 import { actionButton, callout, h } from '../../ui/dom.js';
 import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
-import { saveChatDocument } from './file.js';
 
 const PAGE_SIZE = 20;
 const TABS = [['export', '导出'], ['rules', '规则设置']];
@@ -79,6 +78,7 @@ export function mountChatExporterPage(target, props) {
         draft: structuredClone(runtime.state.settings),
         dirty: false,
         page: 0,
+        exporting: false,
     };
     let disposed = false;
     const notices = createNoticeController(() => render());
@@ -107,20 +107,22 @@ export function mountChatExporterPage(target, props) {
     };
 
     async function download(confirmed, plan) {
+        if (view.exporting)
+            return;
+        view.exporting = true;
+        render();
         try {
-            const suggestion = runtime.downloadSuggestion(view.title);
-            const result = await saveChatDocument(target, suggestion, () => runtime.prepareDownload(view.title, confirmed, plan));
-            if (result.saved) {
-                runtime.downloaded(result.payload);
-                notices.show('文档已保存。', 'success');
-            }
-            else {
-                notices.show('已取消保存。', 'info');
-            }
+            const payload = await runtime.prepareDownload(view.title, confirmed, plan);
+            const result = await props.exportFile(payload.content, payload.filename, payload.format === 'markdown' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8');
+            runtime.downloaded(payload, result);
+            notices.show(result.message, result.status === 'saved' ? 'success' : 'info');
         }
         catch (error) {
             runtime.fileFailed(error);
             throw error;
+        }
+        finally {
+            view.exporting = false;
         }
     }
 
@@ -244,7 +246,7 @@ export function mountChatExporterPage(target, props) {
                     }
                     await download(plan.requiresConfirmation, plan);
                 });
-            }, { className: 'primary', disabled: runtime.state.busy || runtime.state.stale || view.dirty }),
+            }, { className: 'primary', disabled: runtime.state.busy || runtime.state.stale || view.dirty || view.exporting }),
         ));
         const pageCount = Math.max(1, Math.ceil(plan.entries.length / PAGE_SIZE));
         view.page = Math.min(view.page, pageCount - 1);

@@ -1,4 +1,5 @@
 import { ToolkitError, errorKind, errorMessage } from '../../kernel/errors.js';
+import { logFileExportFailure } from '../../kernel/file-export.js';
 import {
     attachWorldEntryRefs,
     buildPromptItemView,
@@ -326,7 +327,13 @@ export class PromptViewerRuntime {
         return serializePromptItems(snapshot.items);
     }
 
-    logExport(kind, via, itemCount) {
-        this.log.info('exported', { data: { format: 'txt', source: via, itemCount, kind } });
+    logExport(kind, via, itemCount, outcome = 'copied') {
+        this.log.info(outcome === 'cancelled' ? 'export.cancelled' : 'exported', {
+            data: { format: 'txt', source: via, itemCount, kind, outcome },
+        });
+    }
+
+    fileFailed(error) {
+        logFileExportFailure(this.log, 'export.file_failed', 'export.file', error, 'prompt-viewer/runtime.js');
     }
 }

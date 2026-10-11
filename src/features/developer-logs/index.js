@@ -4,6 +4,7 @@ export async function createDeveloperLogsFeature(context) {
         mount: (target, props) => mountDeveloperLogsPage(target, {
             ...props,
             runtime: context.logger,
+            exportFile: (content, filename, mimeType) => context.host.exportFile(content, filename, mimeType),
             featureCatalog: context.featureCatalog,
             log: context.logger.scoped({ featureId: 'system', source: 'logger-ui' }),
         }),

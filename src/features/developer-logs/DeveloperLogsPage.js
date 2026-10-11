@@ -1,5 +1,6 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
 import { errorMessage } from '../../kernel/errors.js';
+import { logFileExportFailure } from '../../kernel/file-export.js';
 import { MIB } from '../../kernel/logging/schema.js';
 import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
@@ -22,69 +23,6 @@ function documentContext(target) {
 
 function exportFilename(extension) {
     return `tt-toolkit-logs-${new Date().toISOString().replaceAll(':', '-')}.${extension}`;
-}
-
-function pickerOptions(filename, extension) {
-    const json = extension === 'json';
-    return {
-        suggestedName: filename,
-        types: [{
-            description: json ? 'JSON 日志' : '纯文本日志',
-            accept: { [json ? 'application/json' : 'text/plain']: [`.${extension}`] },
-        }],
-    };
-}
-
-async function chooseExportDestination(target, extension) {
-    const context = documentContext(target);
-    const filename = exportFilename(extension);
-    if (typeof context.window.showSaveFilePicker !== 'function')
-        return { kind: 'download', filename };
-    try {
-        const handle = await context.window.showSaveFilePicker(pickerOptions(filename, extension));
-        return { kind: 'file', filename, handle };
-    }
-    catch (error) {
-        if (error?.name === 'AbortError')
-            return { kind: 'cancelled', filename };
-        throw error;
-    }
-}
-
-function downloadText(target, text, extension, filename) {
-    const context = documentContext(target);
-    const BlobConstructor = context.window.Blob ?? Blob;
-    const urlApi = context.window.URL ?? URL;
-    const blob = new BlobConstructor([text], { type: extension === 'json' ? 'application/json' : 'text/plain' });
-    const url = urlApi.createObjectURL(blob);
-    const link = context.document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.style.display = 'none';
-    context.document.body.append(link);
-    link.click();
-    context.window.setTimeout(() => {
-        link.remove();
-        urlApi.revokeObjectURL(url);
-    }, 1000);
-    return filename;
-}
-
-async function writeExportFile(destination, text) {
-    const writable = await destination.handle.createWritable();
-    try {
-        await writable.write(text);
-        await writable.close();
-    }
-    catch (error) {
-        try {
-            await writable.abort?.();
-        }
-        catch {
-            // Preserve the original write error.
-        }
-        throw error;
-    }
 }
 
 async function copyText(target, text) {
@@ -122,9 +60,7 @@ export function mountDeveloperLogsPage(target, props) {
     const featureCatalog = [{ id: 'system', label: '系统' }, ...(props.featureCatalog ?? [])];
     const featureLabels = new Map(featureCatalog.map(feature => [feature.id, feature.label]));
     const reportFailure = (event, operation, error) => {
-        if (error?.name === 'AbortError')
-            return;
-        log?.fail?.(event, operation, error);
+        logFileExportFailure(log, event, operation, error, 'developer-logs/DeveloperLogsPage.js');
     };
     const hostStatusIssues = () => {
         const issues = [];
@@ -154,6 +90,7 @@ export function mountDeveloperLogsPage(target, props) {
         sourceFilter: '',
         search: '',
         exportFormat: 'log',
+        exporting: false,
         page: 0,
         expanded: null,
         actionNotice: null,
@@ -231,19 +168,10 @@ export function mountDeveloperLogsPage(target, props) {
     }
 
     async function exportDownload(records, format, actionId) {
-        // Invoke the picker before log generation awaits so transient user activation is retained.
-        let destination;
-        try {
-            destination = await chooseExportDestination(target, format);
-        }
-        catch (error) {
-            reportFailure('export.file_failed', 'export.file', error);
-            throw error;
-        }
-        if (destination.kind === 'cancelled') {
-            setActionNotice({ kind: 'neutral', text: '已取消导出。' });
-            return;
-        }
+        log?.info?.('export.file_started', { data: {
+            operation: 'export.file', stage: 'export.serialize', format, recordCount: records.length,
+            sourceLocation: 'developer-logs/DeveloperLogsPage.js', outcome: 'pending',
+        } });
         let text;
         try {
             text = runtime.exportEntries(records, format);
@@ -253,15 +181,14 @@ export function mountDeveloperLogsPage(target, props) {
             throw error;
         }
         try {
-            if (destination.kind === 'file') {
-                await writeExportFile(destination, text);
-                setActionNotice({ kind: 'success', text: `导出成功：${destination.handle.name || destination.filename}` });
-            }
-            else {
-                downloadText(target, text, format, destination.filename);
-                setActionNotice({ kind: 'success', text: `当前 WebView 不支持选择保存位置，已下载到默认目录：${destination.filename}` });
-            }
-            view.completedAction = actionId;
+            const result = await props.exportFile(text, exportFilename(format), format === 'json' ? 'application/json' : 'text/plain;charset=utf-8');
+            log?.info?.('export.file_completed', { data: {
+                operation: 'export.file', stage: 'export.result', format, recordCount: records.length,
+                mode: result.mode, outcome: result.status, sourceLocation: 'developer-logs/DeveloperLogsPage.js',
+            } });
+            setActionNotice({ kind: result.status === 'saved' ? 'success' : 'neutral', text: result.message });
+            if (result.status !== 'cancelled')
+                view.completedAction = actionId;
         }
         catch (error) {
             reportFailure('export.file_failed', 'export.file', error);
@@ -482,9 +409,16 @@ export function mountDeveloperLogsPage(target, props) {
         root.append(h('div', { className: 'actions log-actions' },
             h('label', { className: 'log-export-format' }, '格式', format),
             actionButton(completedLabel('export-filtered', '导出文件'), () => {
+                if (view.exporting)
+                    return;
                 const records = filtered();
-                void run(() => exportDownload(records, view.exportFormat, 'export-filtered'), { progress: `正在选择 ${view.exportFormat.toUpperCase()} 保存位置…` });
-            }, { className: 'secondary' }),
+                const format = view.exportFormat;
+                view.exporting = true;
+                void run(async () => {
+                    try { await exportDownload(records, format, 'export-filtered'); }
+                    finally { view.exporting = false; }
+                }, { progress: `正在导出 ${format.toUpperCase()} 文件…` });
+            }, { className: 'secondary', disabled: view.exporting }),
             actionButton(completedLabel('copy-filtered', '复制到剪贴板'), () => {
                 const records = filtered();
                 void run(() => exportCopy(records, view.exportFormat, 'copy-filtered'), { progress: `正在复制 ${view.exportFormat.toUpperCase()}…` });
