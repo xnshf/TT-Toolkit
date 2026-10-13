@@ -1,4 +1,4 @@
-import { parseShellSettings, validateEntryMode, validateTheme, DEFAULT_WORKSPACE_SIZE, WORKSPACE_SIZES } from '../kernel/settings.js';
+import { parseShellSettings, validateEntryMode, validateTheme, DEFAULT_WORKSPACE_SIZE, WORKSPACE_SIZES, defaultMobileWorkspace } from '../kernel/settings.js';
 import { errorKind, ToolkitError } from '../kernel/errors.js';
 import { mountToolkitApp } from '../ui/main.js';
 import { installKeyboardInset } from '../ui/keyboard.js';
@@ -9,34 +9,41 @@ const STYLE_URL = '/scripts/extensions/third-party/TT-Toolkit/style.css';
 const SETTINGS_KEY = 'shell-settings-v1';
 const TOP_LAYER = '2147483647';
 const LAUNCHER_SIZE = 52;
+const MIN_FLOATING_WIDTH = 240;
+// 给标题栏、两层导航和至少一行完整操作控件留出空间。
+const MIN_FLOATING_HEIGHT = 320;
 
-const mobileQuery = matchMedia('(max-width: 720px)');
+// 手机横屏可能超过 720px；短屏触控设备仍使用手机模式。
+const mobileQuery = matchMedia('(max-width: 720px), (pointer: coarse) and (max-height: 720px)');
 
 function mobile() {
   return mobileQuery.matches;
 }
 
-function clampPoint(point, width, height, margin = 8, bottomMargin = margin) {
+function clampPoint(point, width, height, margin = 8, bottomMargin = margin, bounds = { left: 0, top: 0, width: innerWidth, height: innerHeight }) {
   return {
-    x: Math.min(Math.max(margin, point.x), Math.max(margin, innerWidth - width - margin)),
-    y: Math.min(Math.max(margin, point.y), Math.max(margin, innerHeight - height - bottomMargin)),
+    x: Math.min(Math.max(bounds.left + margin, point.x), Math.max(bounds.left + margin, bounds.left + bounds.width - width - margin)),
+    y: Math.min(Math.max(bounds.top + margin, point.y), Math.max(bounds.top + margin, bounds.top + bounds.height - height - bottomMargin)),
   };
 }
 
-// 安全区数值只能从顶层文档可靠测得;iframe 内 env() 不可用,由宿主注入 CSS 变量。
-function measureSafeBottom() {
+// Android 使用宿主 --tt-inset-*，iOS 使用 env；只在顶层文档测量。
+function measureSafeArea() {
   const probe = document.createElement('div');
-  probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;left:0;bottom:0;height:0;padding-bottom:env(safe-area-inset-bottom,0px)';
+  probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;width:0;height:0;';
+  for (const side of ['top', 'right', 'bottom', 'left'])
+    probe.style.setProperty(`padding-${side}`, `max(var(--tt-inset-${side}, 0px), env(safe-area-inset-${side}, 0px))`);
   document.documentElement.append(probe);
-  const value = parseFloat(getComputedStyle(probe).paddingBottom) || 0;
+  const style = getComputedStyle(probe);
+  const insets = Object.fromEntries(['top', 'right', 'bottom', 'left'].map(side => [side, parseFloat(style.getPropertyValue(`padding-${side}`)) || 0]));
   probe.remove();
-  return value;
+  return insets;
 }
 
-export function draggable(target, handle, read, write, { onClick, onDragEnd, sheet, onSheet } = {}) {
+export function draggable(target, handle, read, write, { onClick, onDragEnd, enabled = () => true, bounds } = {}) {
   let active = null;
   const down = event => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || active || !enabled()) return;
     const interactive = typeof event.target?.closest === 'function'
       ? event.target.closest('button, input, select, textarea, a')
       : null;
@@ -47,7 +54,6 @@ export function draggable(target, handle, read, write, { onClick, onDragEnd, she
       startY: event.clientY,
       origin: read(),
       moved: false,
-      sheetMode: Boolean(sheet?.()),
     };
     handle.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -57,15 +63,12 @@ export function draggable(target, handle, read, write, { onClick, onDragEnd, she
     const dx = event.clientX - active.startX;
     const dy = event.clientY - active.startY;
     if (Math.hypot(dx, dy) > 5) active.moved = true;
-    // 下拉模式:窗口跟手下移预览关闭意图,不受 clamp 限制。
-    if (active.sheetMode) {
-      target.style.transform = `translateY(${Math.max(0, dy)}px)`;
-      return;
-    }
+    if (!active.moved) return;
     const next = clampPoint(
       { x: active.origin.x + dx, y: active.origin.y + dy },
       target.offsetWidth,
       target.offsetHeight,
+      8, 8, bounds?.(),
     );
     target.style.left = `${next.x}px`;
     target.style.top = `${next.y}px`;
@@ -73,31 +76,86 @@ export function draggable(target, handle, read, write, { onClick, onDragEnd, she
   const up = event => {
     if (!active || event.pointerId !== active.id) return;
     const moved = active.moved;
-    const sheetMode = active.sheetMode;
     const gesture = {
       dx: event.clientX - active.startX,
       dy: event.clientY - active.startY,
     };
+    const id = active.id;
     active = null;
-    if (sheetMode) {
-      target.style.transform = '';
-      if (gesture.dy > 96) onSheet?.();
-      return;
-    }
-    const rect = target.getBoundingClientRect();
-    write({ x: rect.left, y: rect.top });
+    if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
     if (!moved) onClick?.();
-    else onDragEnd?.(gesture);
+    else {
+      const rect = target.getBoundingClientRect();
+      write({ x: rect.left, y: rect.top });
+      onDragEnd?.(gesture);
+    }
+  };
+  const cancel = event => {
+    if (!active || event.pointerId !== active.id) return;
+    const { id, origin } = active;
+    active = null;
+    target.style.left = `${origin.x}px`;
+    target.style.top = `${origin.y}px`;
+    if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
   };
   handle.addEventListener('pointerdown', down);
   handle.addEventListener('pointermove', move);
   handle.addEventListener('pointerup', up);
-  handle.addEventListener('pointercancel', up);
+  handle.addEventListener('pointercancel', cancel);
+  handle.addEventListener('lostpointercapture', cancel);
   return () => {
     handle.removeEventListener('pointerdown', down);
     handle.removeEventListener('pointermove', move);
     handle.removeEventListener('pointerup', up);
-    handle.removeEventListener('pointercancel', up);
+    handle.removeEventListener('pointercancel', cancel);
+    handle.removeEventListener('lostpointercapture', cancel);
+  };
+}
+
+function resizable(target, handle, { enabled, bounds, onResizeEnd }) {
+  let active = null;
+  const apply = (origin, dx, dy) => {
+    const frame = bounds();
+    const maxWidth = Math.max(0, frame.left + frame.width - origin.left - 8);
+    const maxHeight = Math.max(0, frame.top + frame.height - origin.top - 8);
+    target.style.width = `${Math.min(maxWidth, Math.max(Math.min(MIN_FLOATING_WIDTH, maxWidth), origin.width + dx))}px`;
+    target.style.height = `${Math.min(maxHeight, Math.max(Math.min(MIN_FLOATING_HEIGHT, maxHeight), origin.height + dy))}px`;
+  };
+  const down = event => {
+    if (event.button !== 0 || active || !enabled()) return;
+    active = { id: event.pointerId, x: event.clientX, y: event.clientY, origin: target.getBoundingClientRect(), moved: false };
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+  const move = event => {
+    if (!active || event.pointerId !== active.id || !enabled()) return;
+    const dx = event.clientX - active.x;
+    const dy = event.clientY - active.y;
+    if (Math.hypot(dx, dy) > 5) active.moved = true;
+    if (active.moved) apply(active.origin, dx, dy);
+  };
+  const finish = event => {
+    if (!active || event.pointerId !== active.id) return;
+    const previous = active;
+    active = null;
+    if (event.type !== 'pointerup' && enabled()) {
+      // 取消时恢复原尺寸，但仍遵守期间发生的视口变化。
+      apply({ ...target.getBoundingClientRect().toJSON(), width: previous.origin.width, height: previous.origin.height }, 0, 0);
+    }
+    if (handle.hasPointerCapture(previous.id)) handle.releasePointerCapture(previous.id);
+    if (event.type === 'pointerup' && previous.moved && enabled()) onResizeEnd(target.getBoundingClientRect());
+  };
+  const keydown = event => {
+    const deltas = { ArrowLeft: [-16, 0], ArrowRight: [16, 0], ArrowUp: [0, -16], ArrowDown: [0, 16] };
+    if (!Object.hasOwn(deltas, event.key) || !enabled()) return;
+    event.preventDefault();
+    apply(target.getBoundingClientRect(), ...deltas[event.key]);
+    onResizeEnd(target.getBoundingClientRect());
+  };
+  const listeners = { pointerdown: down, pointermove: move, pointerup: finish, pointercancel: finish, lostpointercapture: finish, keydown };
+  for (const [type, listener] of Object.entries(listeners)) handle.addEventListener(type, listener);
+  return () => {
+    for (const [type, listener] of Object.entries(listeners)) handle.removeEventListener(type, listener);
   };
 }
 
@@ -126,6 +184,8 @@ export class ShellController {
   iframe;
   workspace;
   safeBottom = 0;
+  safeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+  safeAreaObserver = null;
   handleViewportChange = null;
   themeBridge = null;
   hostScheme = 'dark';
@@ -134,6 +194,7 @@ export class ShellController {
   disposeFrameKeyboardInset = null;
   disposeLauncherDrag = null;
   disposeWorkspaceDrag = null;
+  disposeWorkspaceResize = null;
   log;
 
   constructor(host, features, logger, version = '') {
@@ -151,9 +212,12 @@ export class ShellController {
     // 先在宿主文档写入主题，悬浮球随后挂载时就能取到正确令牌。
     // 宿主自身的 color-scheme 不改，避免影响宿主原生控件外观。
     applyThemeDocument(document, this.settings.theme, this.hostScheme, { colorScheme: false });
-    this.safeBottom = measureSafeBottom();
+    this.safeInsets = measureSafeArea();
+    this.safeBottom = this.safeInsets.bottom;
     this.handleViewportChange = () => this.syncViewport();
     window.addEventListener('resize', this.handleViewportChange);
+    this.safeAreaObserver = new MutationObserver(this.handleViewportChange);
+    this.safeAreaObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
     // 软键盘只压缩可视视口：把被遮挡高度发布为 --ttk-keyboard-inset 供工具页避让。
     this.disposeHostKeyboardInset = installKeyboardInset();
     for (const feature of this.features) {
@@ -223,6 +287,7 @@ export class ShellController {
   // 这里负责把它变成可定位的 warn 和用户可见提示，不假设异常内容。
   reportSettingsIssue(issue) {
     const messages = {
+      'workspace.mobile.mode': '手机工作台模式包含无法识别的值，已回退为全屏。',
       theme: '主题设置包含无法识别的值，已回退为“跟随宿主”。请在下方重新选择主题。',
       entryMode: '入口方式设置包含无法识别的值，已回退为“悬浮球”。',
       'workspace.size': '工作台尺寸档位包含无法识别的值，已回退为“标准”。',
@@ -235,13 +300,15 @@ export class ShellController {
         operation: 'shell.parseSettings', phase: 'parse', sourceLocation: 'src/kernel/settings.js',
         reasonCode: 'SETTINGS_VALUE_UNRECOGNIZED', field: issue.field, expected: issue.expected,
         actualType: issue.actualType, fallbackUsed: issue.fallback,
-        result: 'fallback_applied', recoveryAction: 'reselect_in_settings_page',
+        result: 'fallback_applied', recoveryAction: issue.field === 'workspace.mobile.mode'
+          ? 'switch_mode_in_titlebar_or_reset_layout' : 'reselect_in_settings_page',
       },
     });
   }
 
   clearSettingsNotice(field) {
     const messages = {
+      'workspace.mobile.mode': '手机工作台模式包含无法识别的值，已回退为全屏。',
       theme: '主题设置包含无法识别的值，已回退为“跟随宿主”。请在下方重新选择主题。',
       entryMode: '入口方式设置包含无法识别的值，已回退为“悬浮球”。',
       'workspace.size': '工作台尺寸档位包含无法识别的值，已回退为“标准”。',
@@ -390,34 +457,23 @@ export class ShellController {
 
   // 视口变化(旋转、分屏、跨断点):重测安全区,重新约束悬浮球与工作台。
   syncViewport() {
-    this.safeBottom = measureSafeBottom();
-    this.injectSafeArea();
-    const safe = clampPoint(this.launcherPoint(), LAUNCHER_SIZE, LAUNCHER_SIZE, 8, 8 + this.safeBottom);
-    this.launcher.style.setProperty('left', `${safe.x}px`, 'important');
-    this.launcher.style.setProperty('top', `${safe.y}px`, 'important');
-    if (!this.workspace)
-      return;
-    this.applyWorkspaceSize();
-    if (this.overlay.style.display === 'none')
-      return;
-    const point = clampPoint(
-      this.settings.workspace.position ?? { x: (innerWidth - this.workspace.offsetWidth) / 2, y: (innerHeight - this.workspace.offsetHeight) / 2 },
-      this.workspace.offsetWidth,
-      this.workspace.offsetHeight,
-    );
-    this.workspace.style.left = `${point.x}px`;
-    this.workspace.style.top = `${point.y}px`;
-  }
-
-  injectSafeArea() {
+    this.safeInsets = measureSafeArea();
+    this.safeBottom = this.safeInsets.bottom;
     const root = this.iframe?.contentDocument?.documentElement;
-    root?.style.setProperty('--ttk-safe-bottom', `${this.safeBottom}px`);
+    // iframe 不继承宿主契约；只桥接安全区输入，宽高由 CSS 四边约束。
+    for (const [side, value] of Object.entries(this.safeInsets))
+      root?.style.setProperty(`--ttk-safe-${side}`, `${value}px`);
+    const safe = clampPoint(this.launcherPoint(), LAUNCHER_SIZE, LAUNCHER_SIZE, 8, 8 + this.safeBottom);
+    this.launcher?.style.setProperty('left', `${safe.x}px`, 'important');
+    this.launcher?.style.setProperty('top', `${safe.y}px`, 'important');
+    if (this.workspace && this.overlay.style.display !== 'none')
+      this.applyWorkspaceSize();
   }
 
   async mountWorkbench() {
     const overlay = document.createElement('div');
     overlay.id = 'tt-toolkit-overlay';
-    overlay.setAttribute('data-tt-mobile-surface', 'fullscreen-window');
+    overlay.setAttribute('data-tt-mobile-surface', 'backdrop');
     forceTopLayer(overlay);
     overlay.style.setProperty('inset', '0', 'important');
     overlay.style.setProperty('display', 'none', 'important');
@@ -482,6 +538,7 @@ export class ShellController {
       close: () => this.closeWorkbench(),
       cycleSize: () => this.cycleSize(),
       resetLayout: () => this.resetLayout(),
+      retryLayoutSave: () => this.saveLayout(),
       setRoute: async route => {
         this.settings.lastRoute = route;
         await this.persist();
@@ -491,29 +548,33 @@ export class ShellController {
     this.workspace = frameDocument.querySelector('.workbench');
     if (!this.workspace) throw new Error('工具箱工作台挂载失败');
     this.workspace.style.position = 'fixed';
-    this.injectSafeArea();
-    this.applyWorkspaceSize();
     const handle = frameDocument.querySelector('[data-drag-handle]');
     if (!handle) throw new Error('工具箱拖动手柄不存在');
-    const initial = this.settings.workspace.position
-      ?? { x: Math.max(12, (innerWidth - 900) / 2), y: Math.max(12, (innerHeight - 680) / 2) };
-    const point = clampPoint(initial, this.workspace.offsetWidth || 900, this.workspace.offsetHeight || 680);
-    this.workspace.style.left = `${point.x}px`;
-    this.workspace.style.top = `${point.y}px`;
     this.disposeWorkspaceDrag = draggable(
       this.workspace,
       handle,
       () => ({ x: this.workspace.offsetLeft, y: this.workspace.offsetTop }),
       pointValue => {
-        this.settings.workspace.position = pointValue;
-        void this.persist();
+        if (mobile()) this.settings.workspace.mobile.position = pointValue;
+        else this.settings.workspace.position = pointValue;
+        void this.saveLayout();
       },
       {
-        // 移动端近全屏窗口几乎没有移动余量:标题栏下拉跟手预览,明显下拉即关闭。
-        sheet: () => mobile(),
-        onSheet: () => this.closeWorkbench(),
+        enabled: () => !mobile() || this.settings.workspace.mobile.mode === 'floating',
+        bounds: () => this.workspaceBounds(),
       },
     );
+    const resizeHandle = frameDocument.querySelector('[data-resize-handle]');
+    if (!resizeHandle) throw new Error('工具箱缩放手柄不存在');
+    this.disposeWorkspaceResize = resizable(this.workspace, resizeHandle, {
+      enabled: () => this.overlay.style.display !== 'none' && mobile() && this.settings.workspace.mobile.mode === 'floating',
+      bounds: () => this.workspaceBounds(),
+      onResizeEnd: rect => {
+        this.settings.workspace.mobile.position = { x: rect.left, y: rect.top };
+        this.settings.workspace.mobile.size = { width: rect.width, height: rect.height };
+        void this.saveLayout();
+      },
+    });
   }
 
   async setFeatureEnabled(id, value) {
@@ -545,18 +606,9 @@ export class ShellController {
 
   openWorkbench(focusTarget = this.launcherButton) {
     this.returnFocus = focusTarget;
-    // 移动端为近全屏悬浮窗口,与桌面共用记忆位置;clamp 保证不出视口。
-    const point = clampPoint(
-      this.settings.workspace.position ?? {
-        x: (innerWidth - (this.workspace.offsetWidth || 900)) / 2,
-        y: (innerHeight - (this.workspace.offsetHeight || 680)) / 2,
-      },
-      this.workspace.offsetWidth || 900,
-      this.workspace.offsetHeight || 680,
-    );
-    this.workspace.style.left = `${point.x}px`;
-    this.workspace.style.top = `${point.y}px`;
+    // display:none 下尺寸为零；必须先显示，再读取 iframe 与窗口的实际尺寸。
     this.overlay.style.setProperty('display', 'block', 'important');
+    this.syncViewport();
     this.iframe?.contentWindow?.focus();
   }
 
@@ -568,41 +620,87 @@ export class ShellController {
     target?.focus({ preventScroll: true });
   }
 
+  workspaceBounds() {
+    const view = this.workspace.ownerDocument.defaultView;
+    const { top, right, bottom, left } = this.safeInsets;
+    return { left, top, width: Math.max(0, view.innerWidth - left - right), height: Math.max(0, view.innerHeight - top - bottom) };
+  }
+
   applyWorkspaceSize() {
+    const isMobile = mobile();
+    const fullscreen = isMobile && this.settings.workspace.mobile.mode === 'fullscreen';
+    this.workspace.classList.toggle('is-fullscreen', fullscreen);
+    this.workspace.setAttribute('data-tt-mobile-surface', fullscreen ? 'fullscreen-window' : 'free-window');
+    this.app?.updateLayout({ mobile: isMobile, fullscreen });
+    if (fullscreen) {
+      // 不计算全屏宽高：清除悬浮几何，由 CSS inset 消费四边安全区。
+      for (const property of ['width', 'height', 'left', 'top']) this.workspace.style.removeProperty(property);
+      return;
+    }
+    const bounds = this.workspaceBounds();
+    const margin = isMobile ? 8 : 12;
     const sizes = {
       compact: { width: 720, height: 560 },
       standard: { width: 900, height: 680 },
-      maximized: { width: innerWidth - 24, height: innerHeight - 24 },
+      maximized: { width: bounds.width - 24, height: bounds.height - 24 },
     };
-    const selected = sizes[this.settings.workspace.size];
-    this.workspace.style.width = `${Math.max(320, Math.min(selected.width, innerWidth - 24))}px`;
-    this.workspace.style.height = `${Math.max(420, Math.min(selected.height, innerHeight - 24))}px`;
+    const selected = isMobile
+      ? this.settings.workspace.mobile.size ?? {
+        width: Math.min(560, Math.max(MIN_FLOATING_WIDTH, bounds.width * 0.75)),
+        height: Math.max(MIN_FLOATING_HEIGHT, bounds.height * 0.75),
+      }
+      : sizes[this.settings.workspace.size];
+    this.workspace.style.width = `${Math.max(0, Math.min(Math.max(isMobile ? MIN_FLOATING_WIDTH : 0, selected.width), bounds.width - margin * 2))}px`;
+    this.workspace.style.height = `${Math.max(0, Math.min(Math.max(isMobile ? MIN_FLOATING_HEIGHT : 0, selected.height), bounds.height - margin * 2))}px`;
+    const remembered = isMobile ? this.settings.workspace.mobile.position : this.settings.workspace.position;
+    const centered = {
+      x: bounds.left + (bounds.width - this.workspace.offsetWidth) / 2,
+      y: bounds.top + (bounds.height - this.workspace.offsetHeight) / 2,
+    };
+    const point = clampPoint(remembered ?? centered, this.workspace.offsetWidth, this.workspace.offsetHeight, 8, 8, bounds);
+    this.workspace.style.left = `${point.x}px`;
+    this.workspace.style.top = `${point.y}px`;
   }
 
   cycleSize() {
-    const index = WORKSPACE_SIZES.indexOf(this.settings.workspace.size);
-    this.settings.workspace.size = WORKSPACE_SIZES[(index + 1) % WORKSPACE_SIZES.length] ?? DEFAULT_WORKSPACE_SIZE;
-    this.clearSettingsNotice('workspace.size');
+    if (mobile()) {
+      const layout = this.settings.workspace.mobile;
+      layout.mode = layout.mode === 'fullscreen' ? 'floating' : 'fullscreen';
+      this.clearSettingsNotice('workspace.mobile.mode');
+    } else {
+      const index = WORKSPACE_SIZES.indexOf(this.settings.workspace.size);
+      this.settings.workspace.size = WORKSPACE_SIZES[(index + 1) % WORKSPACE_SIZES.length] ?? DEFAULT_WORKSPACE_SIZE;
+      this.clearSettingsNotice('workspace.size');
+    }
     this.applyWorkspaceSize();
-    const point = clampPoint(
-      { x: this.workspace.offsetLeft, y: this.workspace.offsetTop },
-      this.workspace.offsetWidth,
-      this.workspace.offsetHeight,
-    );
-    this.workspace.style.left = `${point.x}px`;
-    this.workspace.style.top = `${point.y}px`;
-    this.settings.workspace.position = point;
-    void this.persist();
+    void this.saveLayout();
+  }
+
+  async saveLayout() {
+    try {
+      await this.persist();
+      this.app?.setLayoutWarning('');
+    } catch (error) {
+      this.log.warn('layout.save_failed', { data: {
+        operation: 'shell.saveLayout', phase: 'persist', sourceLocation: 'src/shell/controller.js',
+        reasonCode: 'LAYOUT_SETTINGS_SAVE_FAILED', field: SETTINGS_KEY, expected: 'successful-json-write',
+        actualType: error instanceof Error ? 'Error' : typeof error,
+        result: 'layout_applied_not_saved', recoveryAction: 'retry_layout_save',
+      } });
+      this.app?.setLayoutWarning('布局已在当前窗口应用，但保存失败，重启后可能恢复旧布局。');
+    }
   }
 
   dispose() {
     window.removeEventListener('resize', this.handleViewportChange);
+    this.safeAreaObserver?.disconnect();
     this.disposeHostKeyboardInset?.();
     this.disposeHostKeyboardInset = null;
     this.disposeFrameKeyboardInset?.();
     this.disposeFrameKeyboardInset = null;
     this.disposeLauncherDrag?.();
     this.disposeWorkspaceDrag?.();
+    this.disposeWorkspaceResize?.();
     this.wandEntry?.dispose();
     this.wandEntry = null;
     this.themeBridge?.dispose();
@@ -614,14 +712,13 @@ export class ShellController {
 
   resetLayout() {
     this.settings.launcher = { desktop: null, mobile: null };
-    this.settings.workspace = { position: null, size: DEFAULT_WORKSPACE_SIZE };
+    this.settings.workspace = { position: null, size: DEFAULT_WORKSPACE_SIZE, mobile: defaultMobileWorkspace() };
     this.clearSettingsNotice('workspace.size');
     const safe = clampPoint(this.launcherPoint(), LAUNCHER_SIZE, LAUNCHER_SIZE, 8, 8 + this.safeBottom);
     this.launcher.style.setProperty('left', `${safe.x}px`, 'important');
     this.launcher.style.setProperty('top', `${safe.y}px`, 'important');
-    this.applyWorkspaceSize();
-    this.workspace.style.left = `${Math.max(12, (innerWidth - this.workspace.offsetWidth) / 2)}px`;
-    this.workspace.style.top = `${Math.max(12, (innerHeight - this.workspace.offsetHeight) / 2)}px`;
-    void this.persist();
+    this.clearSettingsNotice('workspace.mobile.mode');
+    if (this.overlay.style.display !== 'none') this.applyWorkspaceSize();
+    void this.saveLayout();
   }
 }

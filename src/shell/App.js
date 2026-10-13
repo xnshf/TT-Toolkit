@@ -36,12 +36,24 @@ export class ToolkitApp {
     }
 
     mount() {
+        this.sizeButton = actionButton('◇', this.props.cycleSize, { className: 'resize-button', title: '切换尺寸档位', ariaLabel: '切换尺寸档位' });
+        this.layoutWarningText = h('span');
+        this.layoutWarning = h('div', { className: 'layout-warning callout warning', attrs: { role: 'status', hidden: true } },
+            this.layoutWarningText,
+            actionButton('重试保存布局', this.props.retryLayoutSave, { className: 'secondary' }),
+        );
+        this.resizeHandle = h('button', {
+            type: 'button', className: 'workbench-resize-handle', text: '◢',
+            attrs: { 'data-resize-handle': '', 'aria-label': '调整窗口大小' },
+            title: '拖动右下角调整窗口大小，或用方向键调整',
+        });
+        this.resizeBar = h('div', { className: 'workbench-resize-bar', attrs: { hidden: true } }, this.resizeHandle);
         const titlebar = h('header', { className: 'workbench-titlebar', attrs: { 'data-drag-handle': '' } },
-            h('div', {}, h('b', { text: 'TT-Toolkit' }), h('span', { text: this.props.version })),
+            h('div', {}, h('b', { text: 'TT-Toolkit' }), h('span', { className: 'workbench-version', text: this.props.version })),
             h('div', { className: 'title-actions' },
-                actionButton('◇', this.props.cycleSize, { className: 'layout-only', title: '切换尺寸档位', ariaLabel: '切换尺寸档位' }),
-                actionButton('↺', this.props.resetLayout, { className: 'layout-only', title: '重置界面布局', ariaLabel: '重置界面布局' }),
-                actionButton('×', this.props.close, { className: 'close-button', ariaLabel: '关闭工作台' }),
+                this.sizeButton,
+                actionButton('↺', this.props.resetLayout, { className: 'reset-layout', title: '重置界面布局', ariaLabel: '重置界面布局' }),
+                actionButton('×', this.props.close, { className: 'close-button', attrs: { 'aria-label': '关闭工作台' } }),
             ),
         );
         this.categoryNavigation = h('nav', { className: 'category-navigation', attrs: { 'aria-label': '功能大类' } });
@@ -49,14 +61,13 @@ export class ToolkitApp {
         this.main = h('main');
         this.workbench = h('div', { className: 'workbench' },
             titlebar,
+            this.layoutWarning,
             h('div', { className: 'workbench-body' },
                 this.categoryNavigation,
                 this.featureNavigation,
                 this.main,
             ),
-            h('footer', { className: 'workbench-footer' },
-                actionButton('关闭工作台', this.props.close, { className: 'workbench-close' }),
-            ),
+            this.resizeBar,
         );
         this.target.replaceChildren(this.workbench);
         this.updateCategoryFade = bindScrollFade(this.categoryNavigation);
@@ -67,7 +78,21 @@ export class ToolkitApp {
         return this;
     }
 
-    // 桌面窗口四周露出遮罩:点击工作台外或按 Esc 关闭;确认框打开时 Esc 交给 dialog。
+    updateLayout({ mobile, fullscreen }) {
+        this.resizeBar.hidden = !mobile || fullscreen;
+        this.resizeHandle.disabled = !mobile || fullscreen;
+        const label = mobile ? (fullscreen ? '切换为悬浮窗口' : '切换为全屏') : '切换尺寸档位';
+        this.sizeButton.textContent = mobile ? (fullscreen ? '悬浮' : '全屏') : '◇';
+        this.sizeButton.title = label;
+        this.sizeButton.setAttribute('aria-label', label);
+    }
+
+    setLayoutWarning(message) {
+        this.layoutWarningText.textContent = message;
+        this.layoutWarning.hidden = !message;
+    }
+
+    // 窗口四周露出遮罩:点击工作台外或按 Esc 关闭;确认框打开时 Esc 交给 dialog。
     bindFrameDismiss() {
         const doc = this.target.ownerDocument;
         this.onKeyDown = event => {
