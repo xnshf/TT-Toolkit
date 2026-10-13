@@ -172,7 +172,11 @@ export class ShellController {
     try {
       await this.applyEntryMode(this.settings.entryMode);
     } catch (error) {
-      this.entryWarning = '魔棒入口暂不可用，已保留悬浮球供你打开工具箱。请在“设置 / 界面与入口”重试，或重载宿主。';
+      // 缺少宿主导出属于宿主构建能力缺失，不能引导用户重载宿主。
+      const recovery = error?.code === 'HOST_WAND_EXPORT_MISSING'
+        ? '当前 TauriTavern 构建不提供魔棒菜单接口，请升级或更换宿主构建后重试。'
+        : '请在“设置 / 界面与入口”重试，或重载宿主。';
+      this.entryWarning = `魔棒入口暂不可用，已保留悬浮球供你打开工具箱。${recovery}`;
       this.logEntryFailure(error, 'initialize', 'floating_retained');
       this.launcherButton.title = this.entryWarning;
     }
@@ -323,18 +327,20 @@ export class ShellController {
   }
 
   logEntryFailure(error, phase, result) {
+    // 恢复动作随原因区分：缺少宿主导出只能换宿主构建，重载宿主不会恢复。
     const diagnostics = {
-      HOST_WAND_EXPORT_MISSING: { field: 'extensions.ensureExtensionsUiReady/showHideExtensionsMenu', expected: 'function', actualType: 'missing-function' },
-      HOST_WAND_DOM_MISSING: { field: '#extensionsMenu/#extensionsMenuButton', expected: 'existing-dom-elements', actualType: 'missing-element' },
-      HOST_WAND_ENTRY_DUPLICATE: { field: '#tt-toolkit-wand-entry', expected: 'absent-before-mount', actualType: 'existing-element' },
-      ENTRY_SETTINGS_SAVE_FAILED: { field: 'shell-settings-v1', expected: 'successful-json-write', actualType: 'failed-write' },
+      HOST_WAND_EXPORT_MISSING: { field: 'extensions.ensureExtensionsUiReady/showHideExtensionsMenu', expected: 'function', actualType: 'missing-function', recoveryAction: 'upgrade_or_replace_host_build' },
+      HOST_WAND_DOM_MISSING: { field: '#extensionsMenu/#extensionsMenuButton', expected: 'existing-dom-elements', actualType: 'missing-element', recoveryAction: 'retry_settings_or_reload' },
+      HOST_WAND_ENTRY_DUPLICATE: { field: '#tt-toolkit-wand-entry', expected: 'absent-before-mount', actualType: 'existing-element', recoveryAction: 'reload_host_then_retry' },
+      ENTRY_SETTINGS_SAVE_FAILED: { field: 'shell-settings-v1', expected: 'successful-json-write', actualType: 'failed-write', recoveryAction: 'retry_settings_or_reload' },
     };
-    const diagnostic = Object.hasOwn(diagnostics, error?.code) ? diagnostics[error.code] : null;
+    const known = Object.hasOwn(diagnostics, error?.code);
     this.log.warn('entry.failed', { data: {
       operation: 'shell.entry', phase, sourceLocation: 'src/shell/controller.js',
-      reasonCode: diagnostic ? error.code : 'ENTRY_SETUP_FAILED',
-      ...(diagnostic ?? { field: 'entryMode', expected: 'floating|wand|both', actualType: error instanceof Error ? 'Error' : typeof error }), result,
-      recoveryAction: 'retry_settings_or_reload',
+      reasonCode: known ? error.code : 'ENTRY_SETUP_FAILED',
+      ...(known ? diagnostics[error.code] : { field: 'entryMode', expected: 'floating|wand|both', actualType: error instanceof Error ? 'Error' : typeof error, recoveryAction: 'retry_settings_or_reload' }),
+      result,
+      hostAbiVersion: this.host.hostAbiVersion?.() ?? null,
     } });
   }
 

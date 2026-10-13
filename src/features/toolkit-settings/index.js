@@ -8,11 +8,16 @@ const MODES = [
     { id: 'both', label: '两者都显示', badge: '双通道', description: '同时保留悬浮球与魔棒菜单项，按当前使用场景选择方便的入口。', paths: ['M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z', 'M8 12h8M12 8v8'] },
 ];
 const FAILURE_REASONS = {
-    HOST_WAND_EXPORT_MISSING: '宿主缺少魔棒菜单初始化接口。',
+    HOST_WAND_EXPORT_MISSING: '当前 TauriTavern 构建未提供魔棒菜单接口。',
     HOST_WAND_DOM_MISSING: '宿主魔棒菜单挂载点缺失。',
     HOST_WAND_ENTRY_DUPLICATE: '检测到重复的 TT-Toolkit 魔棒入口。',
     ENTRY_SETTINGS_SAVE_FAILED: '入口设置无法保存。',
 };
+// 缺少宿主导出是宿主构建能力缺失：重载宿主不会恢复。
+const FAILURE_RECOVERY = {
+    HOST_WAND_EXPORT_MISSING: '请升级或更换 TauriTavern 构建后重试；重载宿主无法恢复该接口。',
+};
+const DEFAULT_FAILURE_RECOVERY = '请重试；如仍失败，请重载宿主，并在“设置 / 日志”查看入口诊断。';
 
 function icon(paths) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -203,8 +208,9 @@ export function mountToolkitSettingsPage(target, { entrySettings, themeSettings 
             if (disposed) return;
             saved = entrySettings.getState();
             const reason = Object.hasOwn(FAILURE_REASONS, error?.code) ? FAILURE_REASONS[error.code] : '入口设置暂时无法应用。';
+            const recovery = FAILURE_RECOVERY[error?.code] ?? DEFAULT_FAILURE_RECOVERY;
             // 生效入口不变，保留本次选择供重试；不展示未知错误详情。
-            notices.show(`入口切换失败：${reason}原入口已保留，当前选择尚未生效。请重试；如仍失败，请重载宿主，并在“设置 / 日志”查看入口诊断。`, 'warning');
+            notices.show(`入口切换失败：${reason}原入口已保留，当前选择尚未生效。${recovery}`, 'warning');
         } finally {
             busy = false;
             if (!disposed) { renderNotice(); sync(); }

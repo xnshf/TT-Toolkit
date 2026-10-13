@@ -119,12 +119,18 @@ export class TauriTavernHost {
         if (!loaded || this.context.chat[messageIndex] !== message)
             throw new ToolkitError('COMMIT_CONFLICT', '候选读回期间楼层已改变，请重新预览。', { messageIndex });
     }
+    // abiVersion 是宿主 ABI 版本常量，只用于诊断收集，不能用来识别宿主构建。
+    hostAbiVersion() {
+        const value = this.abi?.abiVersion;
+        return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    }
     async mountToolkitWandEntry(onOpen) {
         this.extensionsModule ??= await dynamicImport(EXTENSIONS_URL);
         const extensions = this.extensionsModule;
         if (typeof extensions.ensureExtensionsUiReady !== 'function'
             || typeof extensions.showHideExtensionsMenu !== 'function') {
-            throw new ToolkitError('HOST_WAND_EXPORT_MISSING', '宿主缺少扩展菜单初始化接口。请保留悬浮球入口，重载宿主后重试。');
+            // 这两个导出由宿主构建决定：缺少导出说明宿主本身没有该能力，重载宿主不会恢复。
+            throw new ToolkitError('HOST_WAND_EXPORT_MISSING', '当前 TauriTavern 构建未提供扩展菜单初始化接口，重载宿主无法恢复。请升级或更换宿主构建后重试，并保留悬浮球入口。');
         }
         await extensions.ensureExtensionsUiReady();
         const menu = document.getElementById('extensionsMenu');
