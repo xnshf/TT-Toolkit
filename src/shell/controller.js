@@ -497,8 +497,14 @@ export class ShellController {
     if (!frameDocument) throw new Error('无法访问工具箱 iframe 文档');
     // 标记工作台文档：tokens/style 里影响整体的规则只在这份文档生效，不泄漏到宿主。
     frameDocument.documentElement.dataset.ttkSurface = 'workbench';
-    // iframe 内不宣告 interactive-widget（会与外壳固定高度冲突），只用可视视口高度避让键盘。
-    this.disposeFrameKeyboardInset = installKeyboardInset(frameDocument.documentElement);
+    // iframe 内不宣告 interactive-widget（会与外壳固定高度冲突），只用可视视口与宿主 IME 高度避让键盘。
+    // 悬浮工作台可能整体位于键盘上方：只发布实际被键盘压住的高度，不凭空缩短内容区。
+    this.disposeFrameKeyboardInset = installKeyboardInset(frameDocument.documentElement, {
+      limit: inset => {
+        const bottom = this.workspace?.getBoundingClientRect().bottom ?? innerHeight;
+        return Math.max(0, Math.min(inset, bottom - (innerHeight - inset)));
+      },
+    });
     frameDocument.documentElement.style.background = 'transparent';
     frameDocument.body.style.cssText = 'margin:0;width:100vw;height:100dvh;overflow:hidden;background:transparent;';
     // 宿主主题令牌不会跨 iframe 继承，由此处桥接到工作台文档根节点。

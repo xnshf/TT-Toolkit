@@ -496,7 +496,8 @@
 
 /* 表单容器 */
 .wie-form-body {
-  padding: 16px 20px 32px;
+  /* 键盘弹起时正文尾部保留可滚动余量：正文下方没有内容时也能把首行推到键盘上方。 */
+  padding: 16px 20px calc(32px + var(--ttk-keyboard-inset, 0px));
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -871,6 +872,7 @@
     height: 100%;
   }
   .wie-form-row { gap: 6px; }
+  /* 窄容器下键盘余量由详情区与宿主内容区提供，这里不再叠加，避免出现两层键盘高度的空白。 */
   .wie-form-body { flex: 0 0 auto; padding: 12px 10px 24px; }
   .wie-mobile-tabs { flex: 0 0 auto; min-height: 44px; }
   .wie-mobile-view-header { flex: 0 0 auto; }
