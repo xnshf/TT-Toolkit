@@ -11,7 +11,7 @@ function object(value, label) {
 function exactKeys(value, allowed, label) {
     const unknown = Object.keys(value).filter(key => !allowed.includes(key));
     if (unknown.length)
-        throw new ToolkitError('INVALID_SCHEMA', `${label} 包含未知字段：${unknown.join(', ')}`);
+        throw new ToolkitError('INVALID_SCHEMA', `${label} 包含未知字段。`);
 }
 
 function normalizeUrl(value) {
@@ -33,12 +33,12 @@ export function createDefaultLlmPresetSettings() {
 }
 
 export function parseLlmPresetSettings(value) {
-    if (value === undefined || value === null)
+    if (value === undefined)
         return createDefaultLlmPresetSettings();
     const raw = object(value, '模型预设设置');
     exactKeys(raw, ['schemaVersion', 'activePresetId', 'presets'], '模型预设设置');
     if (raw.schemaVersion !== 1)
-        throw new ToolkitError('UNSUPPORTED_SCHEMA', `不支持的模型预设版本：${String(raw.schemaVersion)}`);
+        throw new ToolkitError('UNSUPPORTED_SCHEMA', '不支持的模型预设版本，请显式重置模型预设。');
     if (raw.activePresetId !== null && typeof raw.activePresetId !== 'string')
         throw new ToolkitError('INVALID_SCHEMA', 'activePresetId 必须是字符串或 null。');
     if (!Array.isArray(raw.presets))
@@ -46,16 +46,25 @@ export function parseLlmPresetSettings(value) {
     const ids = new Set();
     const presets = raw.presets.map((value, index) => {
         const preset = object(value, `模型预设 ${index + 1}`);
-        exactKeys(preset, ['id', 'name', 'apiUrl', 'model', 'apiKey'], `模型预设 ${index + 1}`);
-        const id = String(preset.id ?? '').trim();
-        const name = String(preset.name ?? '').trim();
-        const model = String(preset.model ?? '').trim();
-        if (!id || !name || !model || typeof preset.apiKey !== 'string')
+        exactKeys(preset, ['id', 'name', 'apiUrl', 'model', 'apiKey', 'protocol'], `模型预设 ${index + 1}`);
+        // Known v1 migration (schemaVersion stays 1): absent protocol means OpenAI; the next save persists it.
+        const protocol = Object.hasOwn(preset, 'protocol') ? preset.protocol : 'openai';
+        if (!['openai', 'systemone'].includes(protocol))
+            throw new ToolkitError('INVALID_SCHEMA', '模型预设协议无效，请显式重置或修正预设。');
+        if (['id', 'name', 'apiUrl', 'model', 'apiKey'].some(key => typeof preset[key] !== 'string'))
+            throw new ToolkitError('INVALID_SCHEMA', `模型预设 ${index + 1} 字段类型无效。`);
+        const id = preset.id.trim();
+        const name = preset.name.trim();
+        const model = preset.model.trim();
+        if (!id || !name || !model)
             throw new ToolkitError('INVALID_SCHEMA', `模型预设 ${index + 1} 缺少必要字段。`);
         if (ids.has(id))
-            throw new ToolkitError('INVALID_SCHEMA', `模型预设 ID 重复：${id}`);
+            throw new ToolkitError('INVALID_SCHEMA', '模型预设 ID 重复。');
         ids.add(id);
-        return { id, name, apiUrl: normalizeUrl(preset.apiUrl), model, apiKey: preset.apiKey };
+        const apiUrl = normalizeUrl(preset.apiUrl);
+        if (protocol === 'systemone')
+            resolveSystemOneUrl(apiUrl);
+        return { id, name, protocol, apiUrl, model, apiKey: preset.apiKey };
     });
     const activePresetId = raw.activePresetId;
     if (activePresetId !== null && !ids.has(activePresetId))
@@ -73,6 +82,14 @@ export function resolveModelsUrl(apiUrl) {
 
 export function resolveOpenAiCompatibleBaseUrl(apiUrl) {
     return normalizeUrl(apiUrl).replace(/\/(?:chat\/completions|models)$/i, '');
+}
+
+export function resolveSystemOneUrl(apiUrl) {
+    const text = normalizeUrl(apiUrl);
+    const url = new URL(text);
+    if (url.username || url.password || url.search || url.hash || text.includes('?') || text.includes('#'))
+        throw new ToolkitError('INVALID_SCHEMA', '决策模型 URL 不允许包含凭据、查询参数或片段。');
+    return /\/systemone$/i.test(text) ? text : `${text}/systemone`;
 }
 
 export class LlmPresetStore {

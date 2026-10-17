@@ -90,6 +90,8 @@ export class LlmTaskService {
         const preset = task.presetId
             ? await this.presets.byId(task.presetId)
             : await this.presets.active();
+        if (preset.protocol !== undefined && preset.protocol !== 'openai')
+            throw new ToolkitError('LLM_PRESET_PROTOCOL_MISMATCH', '此模型任务只支持 OpenAI 预设，请选择匹配的协议。');
         if (typeof this.generate !== 'function')
             throw new ToolkitError('HOST_ABI_MISSING', 'TauriTavern 缺少 OpenAI-compatible 后端生成接口。');
         const transportPreset = { ...preset, apiUrl: resolveOpenAiCompatibleBaseUrl(preset.apiUrl) };

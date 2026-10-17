@@ -2,102 +2,59 @@ import { ToolkitError } from '../../kernel/errors.js';
 import { worldEntryKey } from './schema.js';
 import { WORLD_INFO_LORE_LISTS } from '../../kernel/world-info.js';
 
-export function parseActivationResponse(text, candidateIds) {
-    let value;
-    try {
-        value = JSON.parse(text);
+function invalid(reason) {
+    throw new ToolkitError('DECISION_OVERLAY_INVALID', '决策与本轮世界书条目不一致，未应用任何变更，请使用原生激活。', { reason });
+}
+function idSet(ids) {
+    if (!(Array.isArray(ids) || ids instanceof Set)) invalid('invalid-id-collection');
+    const result = new Set();
+    for (const id of ids) {
+        if (typeof id !== 'string') invalid('invalid-id-type');
+        if (result.has(id)) invalid('duplicate-decision-id');
+        result.add(id);
     }
-    catch (error) {
-        throw new ToolkitError('AI_ROUTER_JSON_INVALID', 'AI 世界书判定未返回合法 JSON。', { error, preview: String(text ?? '').slice(0, 800) });
-    }
-    if (!value || typeof value !== 'object' || Array.isArray(value)
-        || !Object.hasOwn(value, 'activate')
-        || !Array.isArray(value.activate) || value.activate.some(item => typeof item !== 'string')) {
-        throw new ToolkitError('AI_ROUTER_RESPONSE_INVALID', 'AI 世界书判定返回结构无效。');
-    }
-    const known = new Set(candidateIds);
-    const selected = [];
-    for (const id of value.activate) {
-        if (!known.has(id))
-            throw new ToolkitError('AI_ROUTER_UNKNOWN_UID', 'AI 世界书判定返回了未知候选 UID。');
-        if (!selected.includes(id))
-            selected.push(id);
-    }
-    return new Set(selected);
+    return result;
 }
 
-function stripNativeActivationDecorators(content) {
-    const lines = String(content ?? '').split(/\r?\n/);
-    while (lines.length && /^@@(?:activate|dont_activate)(?:\s|$)/.test(lines[0]))
-        lines.shift();
-    return lines.join('\n');
-}
-
-export function neutralizeAiEntryTriggers(entry) {
-    return {
-        ...entry,
-        content: stripNativeActivationDecorators(entry.content),
-        disable: false,
-        key: [],
-        keysecondary: [],
-        constant: false,
-        vectorized: false,
-        triggers: [],
-        characterFilter: null,
-        sticky: 0,
-        cooldown: 0,
-        delay: 0,
-        delayUntilRecursion: false,
-        useProbability: false,
-        probability: 100,
-        group: '',
-        groupOverride: false,
-        useGroupScoring: false,
-    };
-}
-
-// lorePayload has already passed the kernel world-info subscription boundary.
-export function applyActivationDecision(lorePayload, managedIds, selectedIds) {
-    const managed = new Set(managedIds);
-    const selected = new Set(selectedIds);
-    const forceEntries = [];
+// Payload has passed the kernel boundary. Only scan-local clones are replaced;
+// arrays, cached entries, native eligibility, group scoring and budget stay intact.
+export function applyActivationDecision(payload, managedIds, selectedIds) {
+    const managed = idSet(managedIds);
+    const selected = idSet(selectedIds);
+    for (const id of selected) if (!managed.has(id)) invalid('unknown-selected-id');
+    const found = new Set();
+    const changes = [];
+    let activatedCount = 0;
     let suppressedCount = 0;
-    for (const listName of WORLD_INFO_LORE_LISTS) {
-        const entries = lorePayload[listName];
-        for (let index = entries.length - 1; index >= 0; index--) {
+    for (const name of WORLD_INFO_LORE_LISTS) {
+        const entries = payload[name];
+        for (let index = 0; index < entries.length; index++) {
             const entry = entries[index];
-            const id = worldEntryKey(entry?.world, entry?.uid);
-            if (!managed.has(id))
-                continue;
-            if (!selected.has(id)) {
-                entries.splice(index, 1);
-                suppressedCount += 1;
-                continue;
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+            const id = worldEntryKey(entry.world, entry.uid);
+            if (!managed.has(id)) continue;
+            if (found.has(id)) invalid('duplicate-managed-match');
+            found.add(id);
+            let copy;
+            try { copy = structuredClone(entry); }
+            catch { invalid('entry-clone-failed'); }
+            if (selected.has(id)) {
+                Object.assign(copy, {
+                    constant: true, useProbability: false, probability: 100,
+                    sticky: null, cooldown: null, delay: null,
+                    delayUntilRecursion: false, excludeRecursion: false,
+                });
+                activatedCount++;
             }
-            const neutralized = neutralizeAiEntryTriggers(entry);
-            entries[index] = neutralized;
-            forceEntries.push(neutralized);
+            else {
+                copy.disable = true;
+                suppressedCount++;
+            }
+            changes.push({ entries, index, copy });
         }
     }
-    return { forceEntries, suppressedCount };
-}
-
-export function activationJsonSchema(candidateIds) {
-    return {
-        name: 'tt_toolkit_world_info_activation',
-        description: 'Select world info candidate IDs to activate.',
-        strict: true,
-        value: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['activate'],
-            properties: {
-                activate: {
-                    type: 'array',
-                    uniqueItems: true,
-                    items: { type: 'string', enum: [...candidateIds] },
-                },
-            },
-        },
-    };
+    if (found.size !== managed.size) invalid('missing-managed-match');
+    // Finish every validation and clone before touching any host array.
+    for (const { entries, index, copy } of changes) entries[index] = copy;
+    return { activatedCount, suppressedCount };
 }

@@ -1,6 +1,4 @@
 export const temporarilyHiddenFeatureIds = Object.freeze([
-    'model-settings',
-    'world-info-ai',
     'prompt-conflict',
 ]);
 
@@ -17,7 +15,7 @@ export const featureDefinitions = [{
         id: 'model-settings',
         category: { id: 'settings', label: '设置', order: 90 },
         label: '模型服务',
-        description: '管理 TT-Toolkit 内置 LLM 任务使用的 OpenAI-compatible 模型预设。',
+        description: '管理聊天模型及 Jev / System One 兼容决策模型预设。',
         icon: '⚙️',
         order: 5,
         defaultEnabled: true,
@@ -76,8 +74,9 @@ export const featureDefinitions = [{
     }, {
         id: 'world-info-ai',
         category: { id: 'world-info', label: '世界书', order: 30 },
-        label: 'AI 激活',
-        description: '由独立语义描述决定世界书条目是否在本轮激活。',
+        label: '决策激活',
+        description: '由 System One 兼容决策模型判断接管条件的概率与阈值。',
+        defaultEnabled: false,
         icon: '🧭',
         order: 10,
         load: async (context) => (await import('./world-info-ai/index.js')).createWorldInfoAiFeature(context),

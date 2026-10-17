@@ -1,6 +1,7 @@
-import { errorKind, errorMessage } from '../../kernel/errors.js';
+import { ToolkitError, errorKind, errorMessage } from '../../kernel/errors.js';
 import { LlmCapabilityStore, probeResponseFormatCapability } from '../../kernel/llm-capabilities.js';
 import { fetchOpenAiCompatibleModels } from '../../kernel/llm-models.js';
+import { listDecisionModels } from '../../kernel/decision-model.js';
 import { createDefaultLlmPresetSettings, LlmPresetStore, parseLlmPresetSettings } from '../../kernel/llm-presets.js';
 
 export class ModelSettingsRuntime {
@@ -12,11 +13,13 @@ export class ModelSettingsRuntime {
         this.capabilities = options.capabilities ?? new LlmCapabilityStore(host);
         this.probeCapabilityRequest = options.probeCapability ?? probeResponseFormatCapability;
         this.fetchModelsRequest = options.fetchModels ?? fetchOpenAiCompatibleModels;
+        this.fetchDecisionModelsRequest = options.fetchDecisionModels ?? (preset => listDecisionModels(preset, { fetch: options.fetch }));
         this.mutable = {
             settings: createDefaultLlmPresetSettings(),
             busy: false,
             status: '',
             error: '',
+            damaged: false,
         };
         this.state = this.mutable;
         this.listeners = new Set();
@@ -44,9 +47,11 @@ export class ModelSettingsRuntime {
             this.logger.protectValues(settings);
             this.mutable.settings = settings;
             this.mutable.error = '';
+            this.mutable.damaged = false;
         }
         catch (error) {
             this.mutable.error = errorMessage(error);
+            this.mutable.damaged = error instanceof ToolkitError && ['INVALID_SCHEMA', 'UNSUPPORTED_SCHEMA'].includes(error.code);
             this.log.fail('presets.load_failed', 'presets.load', error, { includeError: false });
         }
         finally {
@@ -64,6 +69,7 @@ export class ModelSettingsRuntime {
             this.logger.protectValues(parsed);
             this.mutable.status = '模型预设已保存。';
             this.mutable.error = '';
+            this.mutable.damaged = false;
             void this.probeMissingCapabilities(parsed).catch(() => undefined);
         }
         catch (error) {
@@ -77,8 +83,16 @@ export class ModelSettingsRuntime {
         }
     }
 
+    async reset() {
+        await this.save(createDefaultLlmPresetSettings());
+        this.mutable.status = '模型预设已重置；原预设及访问密钥已清除。';
+        this.notify();
+    }
+
     async probeMissingCapabilities(settings) {
         for (const preset of settings.presets) {
+            if (preset.protocol === 'systemone')
+                continue;
             try {
                 const known = await this.capabilities.formatFor(preset.id);
                 if (known)
@@ -97,9 +111,16 @@ export class ModelSettingsRuntime {
         }
     }
 
+    requestModels(preset) {
+        const draft = structuredClone(preset);
+        return preset.protocol === 'systemone'
+            ? this.fetchDecisionModelsRequest(draft)
+            : this.fetchModelsRequest(this.host, draft);
+    }
+
     async fetchModels(preset) {
         try {
-            return await this.fetchModelsRequest(this.host, structuredClone(preset));
+            return await this.requestModels(preset);
         }
         catch (error) {
             this.log.fail('models.fetch_failed', 'models.fetch', error, { includeError: false });
@@ -109,7 +130,7 @@ export class ModelSettingsRuntime {
 
     async testConnection(preset) {
         try {
-            const models = await this.fetchModelsRequest(this.host, structuredClone(preset));
+            const models = await this.requestModels(preset);
             return { modelCount: models.length };
         }
         catch (error) {

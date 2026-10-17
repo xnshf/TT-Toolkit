@@ -11,6 +11,7 @@ const WORLD_INFO_URL = '/scripts/world-info.js';
 const OPENAI_URL = '/scripts/openai.js';
 const EXTENSIONS_URL = '/scripts/extensions.js';
 const FILE_EXPORT_URL = '/scripts/file-export.js';
+const REGEX_URL = '/scripts/extensions/regex/engine.js';
 const PROMPT_CONFLICT_CHAT_NAMESPACE = 'tt-toolkit.prompt-conflict';
 const PROMPT_CONFLICT_INVALIDATION_EVENTS = [
     'SETTINGS_UPDATED', 'OAI_PRESET_CHANGED_AFTER',
@@ -434,6 +435,14 @@ export class TauriTavernHost {
             add(name, 'character');
         return bindings;
     }
+    isGenerationInProgress() {
+        if (typeof this.scriptModule?.isGenerating !== 'function')
+            throw new ToolkitError('HOST_GENERATION_STATUS_MISSING', '宿主生成状态接口不可用，请检查宿主版本后再测试。');
+        const result = this.scriptModule.isGenerating();
+        if (typeof result !== 'boolean')
+            throw new ToolkitError('HOST_GENERATION_STATUS_INVALID', '宿主生成状态无效，条件测试未开始。');
+        return result;
+    }
     generationWillRequestModel() {
         const context = this.context;
         if (context.onlineStatus === 'no_connection')
@@ -607,6 +616,97 @@ export class TauriTavernHost {
             this.log?.debug('event.generation_ended_unsubscribed');
         };
     }
+    async formatDecisionText(text, source, depth) {
+        const placements = { user_input: 'USER_INPUT', ai_output: 'AI_OUTPUT', world_info: 'WORLD_INFO' };
+        if (typeof text !== 'string' || typeof source !== 'string' || !Object.hasOwn(placements, source)
+            || (depth !== undefined && (!Number.isSafeInteger(depth) || depth < -1))) {
+            throw new ToolkitError('DECISION_TEXT_INVALID', '决策上下文正文、来源或深度无效。');
+        }
+        try {
+            this.regexModule ??= await (this.dynamicImport ?? dynamicImport)(REGEX_URL);
+        }
+        catch {
+            throw new ToolkitError('HOST_DECISION_REGEX_MISSING', '宿主提示词正则模块不可用，本轮应使用原生激活。');
+        }
+        const engine = this.regexModule;
+        const placement = engine?.regex_placement?.[placements[source]];
+        if (typeof engine?.getRegexedString !== 'function' || !Number.isSafeInteger(placement))
+            throw new ToolkitError('HOST_DECISION_REGEX_MISSING', '宿主缺少提示词正则必需导出，本轮应使用原生激活。');
+        let result;
+        try {
+            result = engine.getRegexedString(text, placement, { isPrompt: true, ...(depth !== undefined ? { depth } : {}) });
+        }
+        catch {
+            throw new ToolkitError('DECISION_TEXT_FORMAT_FAILED', '宿主提示词正则处理失败，本轮应使用原生激活。', { source });
+        }
+        if (typeof result !== 'string')
+            throw new ToolkitError('DECISION_TEXT_FORMAT_INVALID', '宿主提示词正则结果不是字符串，本轮应使用原生激活。', {
+                source, expected: 'string', actualType: valueType(result),
+            });
+        return result;
+    }
+    expandDecisionCondition(text) {
+        if (typeof text !== 'string')
+            throw new ToolkitError('DECISION_CONDITION_INVALID', '决策条件必须是字符串。');
+        if (typeof this.scriptModule?.substituteParams !== 'function')
+            throw new ToolkitError('HOST_DECISION_MACRO_MISSING', '宿主缺少条件宏展开接口，本轮应使用原生激活。');
+        let result;
+        try {
+            result = this.scriptModule.substituteParams(text);
+        }
+        catch {
+            throw new ToolkitError('DECISION_CONDITION_EXPANSION_FAILED', '决策条件宏展开失败，本轮应使用原生激活。');
+        }
+        if (typeof result !== 'string')
+            throw new ToolkitError('DECISION_CONDITION_EXPANSION_INVALID', '决策条件宏展开结果不是字符串，本轮应使用原生激活。', {
+                expected: 'string', actualType: valueType(result),
+            });
+        return result;
+    }
+    decisionCharacterKey() {
+        const context = this.context;
+        const id = context.characterId;
+        if (!((Number.isSafeInteger(id) && id >= 0) || (typeof id === 'string' && id.trim())))
+            throw new ToolkitError('DECISION_CHARACTER_INVALID', '当前生成角色身份不可用，本轮应使用原生激活。');
+        const avatar = context.characters?.[id]?.avatar;
+        if (typeof avatar !== 'string' || !avatar.trim())
+            throw new ToolkitError('DECISION_CHARACTER_INVALID', '当前生成角色身份不可用，本轮应使用原生激活。');
+        return JSON.stringify([id, avatar]);
+    }
+    decisionEligibility(entry, type) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+            throw new ToolkitError('DECISION_ENTRY_INVALID', '决策条目必须是对象。');
+        // Match the native scan's loose disable check, before any activation basis.
+        if (entry.disable == true)
+            return false;
+        if (Array.isArray(entry.triggers) && entry.triggers.length && !entry.triggers.includes(type))
+            return false;
+        const filter = entry.characterFilter;
+        if (!filter?.names?.length && !filter?.tags?.length)
+            return true;
+        const context = this.context;
+        const avatar = context.characters?.[context.characterId]?.avatar;
+        if (avatar !== undefined && typeof avatar !== 'string')
+            throw new ToolkitError('DECISION_CHARACTER_INVALID', '当前角色头像标识无效，本轮应使用原生激活。');
+        const filename = avatar?.replace(/\.[^/.]+$/, '') ?? null;
+        if (filter.names?.length) {
+            const included = filter.names.includes(filename);
+            if (filter.isExclude ? included : !included)
+                return false;
+        }
+        if (filter.tags?.length && avatar) {
+            if (!context.tagMap || typeof context.tagMap !== 'object' || Array.isArray(context.tagMap))
+                throw new ToolkitError('DECISION_TAG_MAP_INVALID', '宿主角色标签映射不可用，本轮应使用原生激活。');
+            // getTagKeyForEntity initializes a missing character map to []; do not mutate it here.
+            const tags = avatar in context.tagMap ? context.tagMap[avatar] : [];
+            if (Array.isArray(tags)) {
+                const included = tags.some(tag => filter.tags.includes(tag));
+                if (filter.isExclude ? included : !included)
+                    return false;
+            }
+        }
+        return true;
+    }
     macroProcess(content) {
         const text = String(content ?? '');
         if (!text)
@@ -723,10 +823,10 @@ export class TauriTavernHost {
         }
         return payload;
     }
-    subscribeWorldInfoEntriesLoaded(listener, onContractError) {
+    subscribeWorldInfoEntriesLoaded(listener, onContractError, options = {}) {
         if (typeof listener !== 'function' || typeof onContractError !== 'function')
             throw new TypeError('世界书条目加载订阅需要 listener 与 onContractError 回调');
-        return this.onHostEvent('WORLDINFO_ENTRIES_LOADED', payload => {
+        const wrapped = payload => {
             let validated;
             try {
                 validated = this.validateWorldInfoEntriesPayload(payload);
@@ -736,7 +836,20 @@ export class TauriTavernHost {
             }
             // The host awaits this result before scanning the same mutable arrays.
             return listener(validated);
-        });
+        };
+        if (options.last !== true)
+            return this.onHostEvent('WORLDINFO_ENTRIES_LOADED', wrapped);
+        const context = this.context;
+        const event = context.eventTypes?.WORLDINFO_ENTRIES_LOADED;
+        const emitter = context.eventSource;
+        const remove = typeof emitter?.off === 'function'
+            ? emitter.off.bind(emitter)
+            : typeof emitter?.removeListener === 'function' ? emitter.removeListener.bind(emitter) : null;
+        if (!event || typeof emitter?.makeLast !== 'function' || typeof remove !== 'function')
+            throw new ToolkitError('HOST_EVENT_MISSING', '宿主缺少世界书末位监听或事件移除接口。');
+        // makeLast itself registers; do not call on first (it could auto-fire twice).
+        emitter.makeLast(event, wrapped);
+        return () => remove(event, wrapped);
     }
     async getMountedWorldInfoEntries() {
         const cache = this.worldInfoModule?.worldInfoCache;
