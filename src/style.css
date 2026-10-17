@@ -294,9 +294,6 @@
 .callout.danger { border-color: var(--ttk-danger); background: var(--ttk-danger-soft); }
 
 .feature-notice {
-    position: sticky;
-    top: 8px;
-    z-index: 8;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -307,9 +304,7 @@
     border: 1px solid var(--ttk-border-strong);
     border-left-width: 3px;
     border-radius: var(--ttk-radius-md);
-    background: color-mix(in srgb, var(--ttk-raised) 92%, transparent);
-    box-shadow: var(--ttk-shadow-md);
-    backdrop-filter: blur(8px);
+    background: var(--ttk-raised);
 }
 .feature-notice.success { border-left-color: var(--ttk-success); }
 .feature-notice.warning { border-left-color: var(--ttk-warning); }
@@ -377,9 +372,6 @@
 }
 
 .feature-action-bar {
-    position: sticky;
-    top: 0;
-    z-index: 5;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -389,9 +381,7 @@
     padding: 10px 12px;
     border: 1px solid var(--ttk-border);
     border-radius: var(--ttk-radius-md);
-    background: color-mix(in srgb, var(--ttk-panel) 93%, transparent);
-    box-shadow: var(--ttk-shadow-md);
-    backdrop-filter: blur(8px);
+    background: var(--ttk-panel);
 }
 .feature-action-bar > span { color: var(--ttk-muted); font-size: 13px; }
 .feature-action-bar .actions { margin-left: auto; }
@@ -433,6 +423,8 @@ html[data-ttk-surface] :focus-visible {
 /* ---------- 移动端布局 ---------- */
 @media (max-width:720px), (pointer:coarse) and (max-height:720px) {
     .workbench-titlebar { box-sizing: border-box; height: 64px; padding: 12px 6px 0 14px; }
+    /* 全屏贴合屏幕边缘，按钮再向下让出一段，避开状态栏与边缘手势的误触。 */
+    .workbench.is-fullscreen .workbench-titlebar { height: 80px; padding-top: 28px; }
     .workbench-titlebar .workbench-version { display: none; }
     .workbench-titlebar button { width: 44px; height: 44px; }
     .workbench-titlebar .reset-layout { display: none; }

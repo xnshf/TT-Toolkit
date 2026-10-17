@@ -419,15 +419,11 @@
   scrollbar-width: thin;
 }
 
-/* 吸顶操作栏 */
+/* 详情头部：与内容一起滚动，不吸顶。 */
 .wie-detail-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
   padding: 10px 18px;
   border-bottom: 1px solid var(--ttk-border);
-  background: color-mix(in srgb, var(--ttk-panel) 96%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--ttk-panel);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -482,7 +478,7 @@
   background: var(--ttk-danger-soft);
 }
 
-/* 窄容器吸顶栏的保存状态：与详情头部同源，可点即存。 */
+/* 窄容器顶部栏的保存状态：与详情头部同源，可点即存。 */
 .wie-mobile-save {
   display: inline-flex;
   align-items: center;

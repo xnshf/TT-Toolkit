@@ -531,7 +531,7 @@ export function mountWorldInfoEditorPage(target, props) {
         return box;
     }
 
-    // 窄容器下详情头部被隐藏，把保存状态镜像到吸顶栏，保证手机上也能看到并发起保存。
+    // 窄容器下详情头部被隐藏，把保存状态镜像到窄容器顶部栏，保证手机上也能看到并发起保存。
     function syncMobileSaveChip(statusEl) {
         const chip = target.querySelector('.wie-mobile-save');
         if (!chip)
@@ -1140,7 +1140,7 @@ export function mountWorldInfoEditorPage(target, props) {
         }
 
         target.append(root);
-        // 窄容器吸顶栏的保存状态与详情头部同源，首次渲染后同步一次。
+        // 窄容器顶部栏的保存状态与详情头部同源，首次渲染后同步一次。
         syncMobileSaveChip();
     }
     render();
