@@ -89,6 +89,36 @@ export function mountWorldInfoEditorPage(target, props) {
         render();
     };
 
+    // 保存不上时导航会被 runtime 拦下；给出一次明确的“放弃草稿并继续”，
+    // 避免一个写不进去的草稿把整个页面锁死。世界书本身不会被本次放弃改写。
+    const runNavigating = async task => {
+        notices.clear();
+        try {
+            await task();
+        }
+        catch (error) {
+            const message = errorMessage(error);
+            const discard = runtime.state.dirty && await confirmDanger(target.ownerDocument, {
+                title: '草稿未能保存',
+                message: `${message}\n\n继续会丢弃这条未保存的草稿；世界书不会被本次操作改写。`,
+                confirmLabel: '放弃草稿并继续',
+            });
+            if (!discard) {
+                notices.show(message, 'danger');
+                render();
+                return;
+            }
+            try {
+                await runtime.discardDraft();
+                await task();
+            }
+            catch (retryError) {
+                notices.show(errorMessage(retryError), 'danger');
+            }
+        }
+        render();
+    };
+
     target.classList.add('wie-host');
     const unsubscribe = runtime.subscribe(() => {
         if (disposed) return;
@@ -200,7 +230,7 @@ export function mountWorldInfoEditorPage(target, props) {
         }
 
         select.addEventListener('change', () => {
-            void run(async () => {
+            void runNavigating(async () => {
                 await runtime.selectWorld(select.value);
             });
         });
@@ -215,14 +245,14 @@ export function mountWorldInfoEditorPage(target, props) {
         );
 
         const newBtn = actionButton('＋ 新建条目', () => {
-            void run(async () => {
+            void runNavigating(async () => {
                 await runtime.createEntry();
                 view.mobileSubView = 'edit';
             });
         }, { className: 'primary' });
 
         const refreshBtn = actionButton('刷新', () => {
-            void run(async () => {
+            void runNavigating(async () => {
                 await runtime.refreshWorlds();
             });
         }, { className: 'secondary' });
@@ -302,8 +332,37 @@ export function mountWorldInfoEditorPage(target, props) {
             : [h('div', { className: 'wie-empty-hint', text: '未找到匹配的条目。' })]));
     }
 
+    // 单个条目结构异常时只禁用这一行的编辑：整本世界书仍可浏览，坏条目可在界面里删除。
+    function renderBrokenEntryCard(entry) {
+        const removeBtn = actionButton('删除', () => {
+            void runNavigating(async () => {
+                const confirmed = await confirmDanger(target.ownerDocument, {
+                    title: `确认删除结构异常的条目 #${entry.uid}`,
+                    message: '该条目不是普通对象，编辑器不会改写它；删除会把它从世界书文件中移除。',
+                    confirmLabel: '删除条目',
+                });
+                if (confirmed)
+                    await runtime.deleteEntry(entry.uid);
+            });
+        }, { className: 'danger-button' });
+        return h('article', { className: 'wie-card wie-card-broken', dataset: { uid: String(entry.uid) } },
+            h('div', { className: 'wie-card-head' },
+                h('div', { className: 'wie-card-title-group' },
+                    h('span', { className: 'wie-card-uid', text: `#${entry.uid}` }),
+                    h('strong', { className: 'wie-card-title', text: entry.comment }),
+                ),
+                removeBtn,
+            ),
+            h('div', { className: 'wie-card-keys' },
+                h('span', { className: 'wie-tag', text: '结构异常，无法在编辑器中修改' }),
+            ),
+        );
+    }
+
     function renderEntryCard(entry) {
         const state = runtime.state;
+        if (entry.broken)
+            return renderBrokenEntryCard(entry);
         const isSelected = state.selectedUid === entry.uid;
         const isDisabled = entry.disable;
 
@@ -316,7 +375,7 @@ export function mountWorldInfoEditorPage(target, props) {
         const switchInput = h('input', { type: 'checkbox', checked: !isDisabled });
         switchInput.addEventListener('change', event => {
             event.stopPropagation();
-            void run(async () => {
+            void runNavigating(async () => {
                 await runtime.toggleEntryActive(entry.uid, switchInput.checked);
             });
         });
@@ -370,7 +429,7 @@ export function mountWorldInfoEditorPage(target, props) {
 
         card.append(head, keysContainer, foot);
         card.addEventListener('click', () => {
-            void run(async () => {
+            void runNavigating(async () => {
                 await runtime.selectEntry(entry.uid);
                 view.mobileSubView = 'edit';
             });
@@ -527,13 +586,13 @@ export function mountWorldInfoEditorPage(target, props) {
         syncMobileSaveChip(statusEl);
 
         const duplicateBtn = actionButton('📋 复制', () => {
-            void run(async () => {
+            void runNavigating(async () => {
                 await runtime.duplicateEntry(draft.uid);
             });
         }, { className: 'secondary' });
 
         const deleteBtn = actionButton('🗑️ 删除', () => {
-            void run(async () => {
+            void runNavigating(async () => {
                 const confirmed = await confirmDanger(target.ownerDocument, {
                     title: `确认删除条目 #${draft.uid}`,
                     message: `确定要永久删除条目「${draft.comment || '未命名'}」吗？`,
@@ -719,19 +778,13 @@ export function mountWorldInfoEditorPage(target, props) {
         });
 
         const depthInput = h('input', { type: 'number', className: 'wie-input-text', value: String(draft.depth ?? 4), min: 0 });
-        depthInput.addEventListener('input', () => {
-            runtime.updateDraftField('depth', Number(depthInput.value));
-        });
+        bindNumberInput(depthInput, 'depth', { min: 0 });
 
         const orderInput = h('input', { type: 'number', className: 'wie-input-text', value: String(draft.order ?? 100), step: 10 });
-        orderInput.addEventListener('input', () => {
-            runtime.updateDraftField('order', Number(orderInput.value));
-        });
+        bindNumberInput(orderInput, 'order');
 
         const probInput = h('input', { type: 'number', className: 'wie-input-text', value: String(draft.probability ?? 100), min: 1, max: 100 });
-        probInput.addEventListener('input', () => {
-            runtime.updateDraftField('probability', Number(probInput.value));
-        });
+        bindNumberInput(probInput, 'probability', { min: 1, max: 100 });
 
         const outletInput = h('input', { className: 'wie-input-text', value: draft.outletName ?? '', placeholder: '宿主 Outlet 名称' });
         outletInput.addEventListener('input', () => runtime.updateDraftField('outletName', outletInput.value));
@@ -785,19 +838,13 @@ export function mountWorldInfoEditorPage(target, props) {
         });
 
         const stickyInput = h('input', { type: 'number', className: 'wie-input-text', value: String(draft.sticky ?? ''), placeholder: '0' });
-        stickyInput.addEventListener('input', () => {
-            runtime.updateDraftField('sticky', stickyInput.value ? Number(stickyInput.value) : null);
-        });
+        bindNumberInput(stickyInput, 'sticky', { min: 0, nullable: true });
 
         const cooldownInput = h('input', { type: 'number', className: 'wie-input-text', value: String(draft.cooldown ?? ''), placeholder: '0' });
-        cooldownInput.addEventListener('input', () => {
-            runtime.updateDraftField('cooldown', cooldownInput.value ? Number(cooldownInput.value) : null);
-        });
+        bindNumberInput(cooldownInput, 'cooldown', { min: 0, nullable: true });
 
         const delayInput = h('input', { type: 'number', className: 'wie-input-text', value: String(draft.delay ?? ''), placeholder: '0' });
-        delayInput.addEventListener('input', () => {
-            runtime.updateDraftField('delay', delayInput.value ? Number(delayInput.value) : null);
-        });
+        bindNumberInput(delayInput, 'delay', { min: 0, nullable: true });
 
         const groupInput = h('input', { type: 'text', className: 'wie-input-text', value: draft.group || '', placeholder: '如: factions' });
         groupInput.addEventListener('input', () => {
@@ -805,9 +852,7 @@ export function mountWorldInfoEditorPage(target, props) {
         });
 
         const groupWeightInput = h('input', { type: 'number', className: 'wie-input-text', value: String(draft.groupWeight ?? 100) });
-        groupWeightInput.addEventListener('input', () => {
-            runtime.updateDraftField('groupWeight', Number(groupWeightInput.value));
-        });
+        bindNumberInput(groupWeightInput, 'groupWeight', { min: 0 });
 
         const groupOverrideChk = h('input', { type: 'checkbox', checked: draft.groupOverride });
         groupOverrideChk.addEventListener('change', () => {
@@ -815,9 +860,7 @@ export function mountWorldInfoEditorPage(target, props) {
         });
 
         const scanDepthInput = h('input', { type: 'number', className: 'wie-input-text', value: String(draft.scanDepth ?? ''), placeholder: '默认扫描' });
-        scanDepthInput.addEventListener('input', () => {
-            runtime.updateDraftField('scanDepth', scanDepthInput.value ? Number(scanDepthInput.value) : null);
-        });
+        bindNumberInput(scanDepthInput, 'scanDepth', { min: 0, nullable: true });
 
         const caseChk = h('input', { type: 'checkbox', checked: Boolean(draft.caseSensitive) });
         caseChk.addEventListener('change', () => {
@@ -918,16 +961,72 @@ export function mountWorldInfoEditorPage(target, props) {
     async function closeDetailView() {
         if (runtime.state.dirty || runtime.state.saveStatus === 'error') {
             const saved = await saveManually();
-            if (!saved)
-                return;
+            if (!saved) {
+                const discard = await confirmDanger(target.ownerDocument, {
+                    title: '草稿未能保存',
+                    message: '继续返回列表会丢弃这条未保存的草稿；世界书不会被本次操作改写。',
+                    confirmLabel: '放弃草稿并返回',
+                });
+                if (!discard)
+                    return;
+                try {
+                    await runtime.discardDraft();
+                }
+                catch (error) {
+                    notices.show(errorMessage(error), 'danger');
+                    render();
+                    return;
+                }
+            }
         }
         view.mobileSubView = 'list';
         render();
     }
 
+    // 数字参数输入：空值或非法值不进入草稿（Number('') 是 0，直接写会把条目静默改成 0），
+    // 保留上一次合法值并标记输入框，等用户修正后再写入。
+    function bindNumberInput(input, field, { min = null, max = null, nullable = false } = {}) {
+        input.dataset.field = field;
+        const restore = () => {
+            const current = runtime.state.currentDraft?.[field];
+            input.value = current === null || current === undefined ? '' : String(current);
+            input.classList.remove('wie-input-invalid');
+            input.removeAttribute('title');
+        };
+        input.addEventListener('input', () => {
+            const raw = input.value.trim();
+            if (raw === '') {
+                input.classList.remove('wie-input-invalid');
+                input.removeAttribute('title');
+                // 允许为空的字段（sticky/cooldown/delay/scanDepth）清空即退回“不设置”。
+                if (nullable)
+                    runtime.updateDraftField(field, null);
+                return;
+            }
+            const value = Number(raw);
+            const invalid = !Number.isInteger(value)
+                || (min !== null && value < min)
+                || (max !== null && value > max);
+            input.classList.toggle('wie-input-invalid', invalid);
+            if (invalid) {
+                input.title = `需要 ${min ?? '不限'} 到 ${max ?? '不限'} 之间的整数；未写入世界书。`;
+                return;
+            }
+            input.removeAttribute('title');
+            runtime.updateDraftField(field, value);
+        });
+        input.addEventListener('blur', () => {
+            if (input.classList.contains('wie-input-invalid') || (input.value.trim() === '' && !nullable))
+                restore();
+        });
+    }
+
     async function saveManually() {
         try {
-            await runtime.saveCurrentDraft({ isAuto: false });
+            const written = await runtime.saveCurrentDraft({ isAuto: false });
+            // 没有改动时也给一次明确反馈，避免保存按钮看起来没反应。
+            if (!written)
+                notices.show('没有需要保存的修改。', 'info');
             return true;
         }
         catch (error) {
@@ -946,8 +1045,11 @@ export function mountWorldInfoEditorPage(target, props) {
             bar.append(actionButton('重试保存', () => { void saveManually(); }, { className: 'secondary' }));
             bar.append(actionButton('重读世界书', () => {
                 void run(async () => {
-                    await runtime.refreshWorlds();
-                    notices.show('已重新读取世界书。', 'success');
+                    // 重读只对齐磁盘事实源：不写入、也不丢弃未保存的草稿。
+                    const result = await runtime.refreshWorlds({ keepDraft: true });
+                    notices.show(result?.draftKept
+                        ? '已重新读取世界书，草稿保留但尚未写入。'
+                        : '已重新读取世界书；原条目已不存在，草稿已丢弃。', result?.draftKept ? 'success' : 'warning');
                 });
             }, { className: 'secondary' }));
         }

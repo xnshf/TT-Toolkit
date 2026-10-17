@@ -1,10 +1,10 @@
 import { ToolkitError } from '../../kernel/errors.js';
 import { sha256Hex } from '../../kernel/hash.js';
+import { sameJsonValue } from '../../kernel/snapshot.js';
 import { embedWorldInfoAiConfig, parseWorldInfoAiConfig, readEmbeddedWorldInfoAiConfig,
     WORLD_INFO_EXTENSION_KEY, WORLD_INFO_ROUTER_FIELD } from './schema.js';
 
 const TABLE = 'world-info-ai';
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function legacyKey(name) {
     return name === name.trim() && /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(name) ? name : null;
 }
@@ -30,19 +30,29 @@ export class WorldInfoAiConfigStore {
     }
     async assertUnchanged(name, expected) {
         const fresh = await this.host.loadWorldInfoFresh(name);
-        if (!fresh || (expected && !same(fresh, expected)))
+        if (!fresh || (expected && !sameJsonValue(fresh, expected)))
             throw new ToolkitError('WORLD_INFO_STALE', '世界书已被其它操作修改，草稿已保留；请重新读取后核对，不会覆盖新内容。');
         return fresh;
     }
     async save(name, config, worldData) {
         const validated = parseWorldInfoAiConfig(config);
         const data = await this.assertUnchanged(name, worldData);
-        let fresh;
+        // 写入失败说明世界书没被改动，必须如实报错；不能伪装成“宿主丢弃扩展字段”并降级成功。
         try {
             await this.host.saveWorldInfo(name, embedWorldInfoAiConfig(data, validated));
+        }
+        catch (error) {
+            this.log?.warn('config.save_failed', { data: { operation: 'config.save', stage: 'world-write',
+                reason: error instanceof ToolkitError ? error.code : 'unknown',
+                sourceLocation: 'features/world-info-ai/storage.js:save', outcome: 'not-written',
+                nextAction: 'check-world-file-then-retry' } });
+            throw error;
+        }
+        let fresh;
+        try {
             fresh = await this.host.loadWorldInfoFresh(name);
             const embedded = readEmbeddedWorldInfoAiConfig(fresh);
-            if (embedded === undefined || !same(parseWorldInfoAiConfig(embedded), validated))
+            if (embedded === undefined || !sameJsonValue(parseWorldInfoAiConfig(embedded), validated))
                 throw new ToolkitError('WORLD_INFO_EXTENSION_DROPPED', '宿主未完整保留决策配置扩展字段。');
         }
         catch (error) {

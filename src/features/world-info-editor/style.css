@@ -281,6 +281,16 @@
   background: var(--ttk-card);
 }
 
+/* 结构异常的条目：可浏览、可删除，但不进入编辑器 */
+.wie-card-broken {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--ttk-danger, #ef4444) 55%, var(--ttk-border));
+  cursor: default;
+}
+.wie-card-broken .wie-card-title {
+  color: var(--ttk-danger, #ef4444);
+}
+
 .wie-card-head {
   display: flex;
   align-items: center;
@@ -570,6 +580,12 @@
 }
 .wie-input-text:focus {
   border-color: var(--ttk-accent);
+}
+
+/* 非法数字输入：不写入草稿，等用户修正 */
+.wie-input-text.wie-input-invalid {
+  border-color: var(--ttk-danger, #ef4444);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ttk-danger, #ef4444) 55%, transparent);
 }
 
 .wie-hint {

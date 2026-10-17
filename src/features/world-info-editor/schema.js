@@ -215,6 +215,13 @@ export function createNewEntry(uid, comment = '新设定条目') {
 }
 
 /**
+ * 判断条目能否进入编辑器：只有普通对象可以，数组、字符串等异常结构只能删除。
+ */
+export function isEditorEntry(entry) {
+    return Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry);
+}
+
+/**
  * 提取条目的排序与过滤快照属性
  */
 export function projectEntrySummary(entry) {
