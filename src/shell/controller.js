@@ -1,178 +1,18 @@
 import { parseShellSettings, validateEntryMode, validateTheme, DEFAULT_WORKSPACE_SIZE, WORKSPACE_SIZES, defaultMobileWorkspace } from '../kernel/settings.js';
 import { errorKind, ToolkitError } from '../kernel/errors.js';
-import { mountToolkitApp } from '../ui/main.js';
 import { installKeyboardInset } from '../ui/keyboard.js';
-import { createThemeBridge } from '../ui/theme-bridge.js';
 import { applyThemeDocument } from '../ui/theme.js';
+import { mountLauncher, mountWorkbench } from './mount.js';
+import { MIN_FLOATING_HEIGHT, MIN_FLOATING_WIDTH, clampPoint } from './pointer.js';
+import { measureSafeArea, mobile } from './viewport.js';
 
-const STYLE_URL = '/scripts/extensions/third-party/TT-Toolkit/style.css';
 const SETTINGS_KEY = 'shell-settings-v1';
-const TOP_LAYER = '2147483647';
 const LAUNCHER_SIZE = 52;
-const MIN_FLOATING_WIDTH = 240;
-// 给标题栏、两层导航和至少一行完整操作控件留出空间。
-const MIN_FLOATING_HEIGHT = 320;
-
-// 手机横屏可能超过 720px；短屏触控设备仍使用手机模式。
-const mobileQuery = matchMedia('(max-width: 720px), (pointer: coarse) and (max-height: 720px)');
-
-function mobile() {
-  return mobileQuery.matches;
-}
-
-function clampPoint(point, width, height, margin = 8, bottomMargin = margin, bounds = { left: 0, top: 0, width: innerWidth, height: innerHeight }) {
-  return {
-    x: Math.min(Math.max(bounds.left + margin, point.x), Math.max(bounds.left + margin, bounds.left + bounds.width - width - margin)),
-    y: Math.min(Math.max(bounds.top + margin, point.y), Math.max(bounds.top + margin, bounds.top + bounds.height - height - bottomMargin)),
-  };
-}
-
-// Android 使用宿主 --tt-inset-*，iOS 使用 env；只在顶层文档测量。
-function measureSafeArea() {
-  const probe = document.createElement('div');
-  probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;width:0;height:0;';
-  for (const side of ['top', 'right', 'bottom', 'left'])
-    probe.style.setProperty(`padding-${side}`, `max(var(--tt-inset-${side}, 0px), env(safe-area-inset-${side}, 0px))`);
-  document.documentElement.append(probe);
-  const style = getComputedStyle(probe);
-  const insets = Object.fromEntries(['top', 'right', 'bottom', 'left'].map(side => [side, parseFloat(style.getPropertyValue(`padding-${side}`)) || 0]));
-  probe.remove();
-  return insets;
-}
-
-export function draggable(target, handle, read, write, { onClick, onDragEnd, enabled = () => true, bounds } = {}) {
-  let active = null;
-  const down = event => {
-    if (event.button !== 0 || active || !enabled()) return;
-    const interactive = typeof event.target?.closest === 'function'
-      ? event.target.closest('button, input, select, textarea, a')
-      : null;
-    if (interactive && interactive !== handle) return;
-    active = {
-      id: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      origin: read(),
-      moved: false,
-    };
-    handle.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  };
-  const move = event => {
-    if (!active || event.pointerId !== active.id) return;
-    const dx = event.clientX - active.startX;
-    const dy = event.clientY - active.startY;
-    if (Math.hypot(dx, dy) > 5) active.moved = true;
-    if (!active.moved) return;
-    const next = clampPoint(
-      { x: active.origin.x + dx, y: active.origin.y + dy },
-      target.offsetWidth,
-      target.offsetHeight,
-      8, 8, bounds?.(),
-    );
-    target.style.left = `${next.x}px`;
-    target.style.top = `${next.y}px`;
-  };
-  const up = event => {
-    if (!active || event.pointerId !== active.id) return;
-    const moved = active.moved;
-    const gesture = {
-      dx: event.clientX - active.startX,
-      dy: event.clientY - active.startY,
-    };
-    const id = active.id;
-    active = null;
-    if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
-    if (!moved) onClick?.();
-    else {
-      const rect = target.getBoundingClientRect();
-      write({ x: rect.left, y: rect.top });
-      onDragEnd?.(gesture);
-    }
-  };
-  const cancel = event => {
-    if (!active || event.pointerId !== active.id) return;
-    const { id, origin } = active;
-    active = null;
-    target.style.left = `${origin.x}px`;
-    target.style.top = `${origin.y}px`;
-    if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
-  };
-  handle.addEventListener('pointerdown', down);
-  handle.addEventListener('pointermove', move);
-  handle.addEventListener('pointerup', up);
-  handle.addEventListener('pointercancel', cancel);
-  handle.addEventListener('lostpointercapture', cancel);
-  return () => {
-    handle.removeEventListener('pointerdown', down);
-    handle.removeEventListener('pointermove', move);
-    handle.removeEventListener('pointerup', up);
-    handle.removeEventListener('pointercancel', cancel);
-    handle.removeEventListener('lostpointercapture', cancel);
-  };
-}
-
-function resizable(target, handle, { enabled, bounds, onResizeEnd }) {
-  let active = null;
-  const apply = (origin, dx, dy) => {
-    const frame = bounds();
-    const maxWidth = Math.max(0, frame.left + frame.width - origin.left - 8);
-    const maxHeight = Math.max(0, frame.top + frame.height - origin.top - 8);
-    target.style.width = `${Math.min(maxWidth, Math.max(Math.min(MIN_FLOATING_WIDTH, maxWidth), origin.width + dx))}px`;
-    target.style.height = `${Math.min(maxHeight, Math.max(Math.min(MIN_FLOATING_HEIGHT, maxHeight), origin.height + dy))}px`;
-  };
-  const down = event => {
-    if (event.button !== 0 || active || !enabled()) return;
-    active = { id: event.pointerId, x: event.clientX, y: event.clientY, origin: target.getBoundingClientRect(), moved: false };
-    handle.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  };
-  const move = event => {
-    if (!active || event.pointerId !== active.id || !enabled()) return;
-    const dx = event.clientX - active.x;
-    const dy = event.clientY - active.y;
-    if (Math.hypot(dx, dy) > 5) active.moved = true;
-    if (active.moved) apply(active.origin, dx, dy);
-  };
-  const finish = event => {
-    if (!active || event.pointerId !== active.id) return;
-    const previous = active;
-    active = null;
-    if (event.type !== 'pointerup' && enabled()) {
-      // 取消时恢复原尺寸，但仍遵守期间发生的视口变化。
-      apply({ ...target.getBoundingClientRect().toJSON(), width: previous.origin.width, height: previous.origin.height }, 0, 0);
-    }
-    if (handle.hasPointerCapture(previous.id)) handle.releasePointerCapture(previous.id);
-    if (event.type === 'pointerup' && previous.moved && enabled()) onResizeEnd(target.getBoundingClientRect());
-  };
-  const keydown = event => {
-    const deltas = { ArrowLeft: [-16, 0], ArrowRight: [16, 0], ArrowUp: [0, -16], ArrowDown: [0, 16] };
-    if (!Object.hasOwn(deltas, event.key) || !enabled()) return;
-    event.preventDefault();
-    apply(target.getBoundingClientRect(), ...deltas[event.key]);
-    onResizeEnd(target.getBoundingClientRect());
-  };
-  const listeners = { pointerdown: down, pointermove: move, pointerup: finish, pointercancel: finish, lostpointercapture: finish, keydown };
-  for (const [type, listener] of Object.entries(listeners)) handle.addEventListener(type, listener);
-  return () => {
-    for (const [type, listener] of Object.entries(listeners)) handle.removeEventListener(type, listener);
-  };
-}
-
-function forceTopLayer(element) {
-  element.style.setProperty('position', 'fixed', 'important');
-  element.style.setProperty('z-index', TOP_LAYER, 'important');
-  element.style.setProperty('isolation', 'isolate', 'important');
-}
-
-function waitForFrame(iframe) {
-  return new Promise((resolve, reject) => {
-    iframe.addEventListener('load', () => resolve(iframe.contentDocument), { once: true });
-    iframe.addEventListener('error', () => reject(new Error('工具箱 iframe 加载失败')), { once: true });
-  });
-}
 
 export class ShellController {
+  host;
+  features;
+  version;
   settings;
   enabled = {};
   launcher;
@@ -195,6 +35,7 @@ export class ShellController {
   disposeLauncherDrag = null;
   disposeWorkspaceDrag = null;
   disposeWorkspaceResize = null;
+  app;
   log;
 
   constructor(host, features, logger, version = '') {
@@ -357,40 +198,7 @@ export class ShellController {
   }
 
   mountLauncher() {
-    const root = document.createElement('div');
-    root.id = 'tt-toolkit-launcher-root';
-    root.setAttribute('data-tt-mobile-surface', 'free-window');
-    forceTopLayer(root);
-    const point = this.launcherPoint();
-    const safe = clampPoint(point, LAUNCHER_SIZE, LAUNCHER_SIZE, 8, 8 + this.safeBottom);
-    root.style.setProperty('left', `${safe.x}px`, 'important');
-    root.style.setProperty('top', `${safe.y}px`, 'important');
-    const shadow = root.attachShadow({ mode: 'open' });
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = STYLE_URL;
-    shadow.append(link);
-    const button = document.createElement('button');
-    button.className = 'launcher-button';
-    button.type = 'button';
-    button.title = '打开 TT-Toolkit';
-    button.setAttribute('aria-label', '打开 TT-Toolkit');
-    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v11H4zM8 4h8v3.5H8zM3 10h18M9 10v2.5h6V10"/></svg>';
-    shadow.append(button);
-    document.documentElement.append(root);
-    this.launcher = root;
-    this.launcherButton = button;
-    this.disposeLauncherDrag = draggable(
-      root,
-      button,
-      () => ({ x: root.offsetLeft, y: root.offsetTop }),
-      pointValue => {
-        if (mobile()) this.settings.launcher.mobile = pointValue;
-        else this.settings.launcher.desktop = pointValue;
-        void this.persist();
-      },
-      { onClick: () => this.toggleWorkbench() },
-    );
+    mountLauncher(this);
   }
 
   logEntryFailure(error, phase, result) {
@@ -471,116 +279,7 @@ export class ShellController {
   }
 
   async mountWorkbench() {
-    const overlay = document.createElement('div');
-    overlay.id = 'tt-toolkit-overlay';
-    overlay.setAttribute('data-tt-mobile-surface', 'backdrop');
-    forceTopLayer(overlay);
-    overlay.style.setProperty('inset', '0', 'important');
-    overlay.style.setProperty('display', 'none', 'important');
-    overlay.style.setProperty('width', '100vw', 'important');
-    overlay.style.setProperty('height', '100dvh', 'important');
-    // 遮罩取令牌层；样式表尚未生效时回退到同值，避免工作台背后没有遮罩。
-    overlay.style.setProperty('background', 'var(--ttk-workbench-scrim, rgb(0 0 0 / 0.32))', 'important');
-
-    const iframe = document.createElement('iframe');
-    iframe.id = 'tt-toolkit-frame';
-    iframe.title = 'TT-Toolkit 工具箱';
-    iframe.style.cssText = 'display:block;width:100%;height:100%;border:0;background:transparent;';
-    iframe.srcdoc = '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="tt-toolkit-frame-root"></div></body></html>';
-    const frameReady = waitForFrame(iframe);
-    overlay.append(iframe);
-    document.documentElement.append(overlay);
-    this.overlay = overlay;
-    this.iframe = iframe;
-
-    const frameDocument = await frameReady;
-    if (!frameDocument) throw new Error('无法访问工具箱 iframe 文档');
-    // 标记工作台文档：tokens/style 里影响整体的规则只在这份文档生效，不泄漏到宿主。
-    frameDocument.documentElement.dataset.ttkSurface = 'workbench';
-    // iframe 内不宣告 interactive-widget（会与外壳固定高度冲突），只用可视视口与宿主 IME 高度避让键盘。
-    // 悬浮工作台可能整体位于键盘上方：只发布实际被键盘压住的高度，不凭空缩短内容区。
-    this.disposeFrameKeyboardInset = installKeyboardInset(frameDocument.documentElement, {
-      limit: inset => {
-        const bottom = this.workspace?.getBoundingClientRect().bottom ?? innerHeight;
-        return Math.max(0, Math.min(inset, bottom - (innerHeight - inset)));
-      },
-    });
-    frameDocument.documentElement.style.background = 'transparent';
-    frameDocument.body.style.cssText = 'margin:0;width:100vw;height:100dvh;overflow:hidden;background:transparent;';
-    // 宿主主题令牌不会跨 iframe 继承，由此处桥接到工作台文档根节点。
-    this.themeBridge = createThemeBridge(frameDocument, {
-      onSchemeChange: scheme => {
-        this.hostScheme = scheme;
-        this.applyTheme();
-      },
-    });
-    this.hostScheme = this.themeBridge.read().scheme;
-    this.applyTheme();
-    const style = frameDocument.createElement('link');
-    style.rel = 'stylesheet';
-    style.href = STYLE_URL;
-    frameDocument.head.append(style);
-    const mount = frameDocument.getElementById('tt-toolkit-frame-root');
-    if (!mount) throw new Error('工具箱 iframe 挂载点不存在');
-
-    this.app = mountToolkitApp(mount, {
-      version: this.version,
-      features: this.features,
-      enabled: this.enabled,
-      initialRoute: this.settings.lastRoute,
-      entrySettings: {
-        getState: () => ({
-          mode: this.settings.entryMode,
-          warning: this.entryWarning,
-          notices: [...this.settingsNotices],
-        }),
-        setMode: mode => this.setEntryMode(mode),
-        resetLayout: () => this.resetLayout(),
-      },
-      themeSettings: {
-        getState: () => ({ theme: this.settings.theme, scheme: this.hostScheme }),
-        setTheme: theme => this.setTheme(theme),
-      },
-      close: () => this.closeWorkbench(),
-      cycleSize: () => this.cycleSize(),
-      resetLayout: () => this.resetLayout(),
-      retryLayoutSave: () => this.saveLayout(),
-      setRoute: async route => {
-        this.settings.lastRoute = route;
-        await this.persist();
-      },
-      setFeatureEnabled: async (id, value) => this.setFeatureEnabled(id, value),
-    });
-    this.workspace = frameDocument.querySelector('.workbench');
-    if (!this.workspace) throw new Error('工具箱工作台挂载失败');
-    this.workspace.style.position = 'fixed';
-    const handle = frameDocument.querySelector('[data-drag-handle]');
-    if (!handle) throw new Error('工具箱拖动手柄不存在');
-    this.disposeWorkspaceDrag = draggable(
-      this.workspace,
-      handle,
-      () => ({ x: this.workspace.offsetLeft, y: this.workspace.offsetTop }),
-      pointValue => {
-        if (mobile()) this.settings.workspace.mobile.position = pointValue;
-        else this.settings.workspace.position = pointValue;
-        void this.saveLayout();
-      },
-      {
-        enabled: () => !mobile() || this.settings.workspace.mobile.mode === 'floating',
-        bounds: () => this.workspaceBounds(),
-      },
-    );
-    const resizeHandle = frameDocument.querySelector('[data-resize-handle]');
-    if (!resizeHandle) throw new Error('工具箱缩放手柄不存在');
-    this.disposeWorkspaceResize = resizable(this.workspace, resizeHandle, {
-      enabled: () => this.overlay.style.display !== 'none' && mobile() && this.settings.workspace.mobile.mode === 'floating',
-      bounds: () => this.workspaceBounds(),
-      onResizeEnd: rect => {
-        this.settings.workspace.mobile.position = { x: rect.left, y: rect.top };
-        this.settings.workspace.mobile.size = { width: rect.width, height: rect.height };
-        void this.saveLayout();
-      },
-    });
+    await mountWorkbench(this);
   }
 
   async setFeatureEnabled(id, value) {

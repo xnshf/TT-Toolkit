@@ -1,7 +1,8 @@
 import { errorMessage } from '../../kernel/errors.js';
-import { actionButton, callout, h } from '../../ui/dom.js';
+import { actionButton, callout, h, pagerBar } from '../../ui/dom.js';
 import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
+import { createActionRunner } from '../../ui/run-action.js';
 
 const PAGE_SIZE = 20;
 const TABS = [['export', '导出'], ['rules', '规则设置']];
@@ -95,16 +96,11 @@ export function mountChatExporterPage(target, props) {
         }
     }
 
-    const run = async task => {
-        notices.clear();
-        try {
-            await task();
-        }
-        catch (error) {
-            notices.show(errorMessage(error), 'warning');
-        }
-        render();
-    };
+    const run = createActionRunner({
+        notices,
+        failureKind: 'warning',
+        render: () => render(),
+    });
 
     async function download(confirmed, plan) {
         if (view.exporting)
@@ -261,11 +257,12 @@ export function mountChatExporterPage(target, props) {
                     ? h('div', { className: 'exporter-diff' }, h('pre', { text: entry.originalText }), h('pre', { text: entry.text }))
                     : h('pre', { text: !entry.readable ? entry.issues.find(issue => issue.code !== 'MESSAGE_SWIPE_INVALID').message : entry.included ? entry.text : entry.originalText }),
             ))));
-        root.append(h('div', { className: 'pager' },
-            actionButton('上一页', () => { view.page -= 1; render(); }, { disabled: view.page === 0 }),
-            h('span', { text: `${view.page + 1} / ${pageCount}` }),
-            actionButton('下一页', () => { view.page += 1; render(); }, { disabled: view.page + 1 >= pageCount }),
-        ));
+        root.append(pagerBar({
+            page: view.page,
+            pageCount,
+            onPrevious: () => { view.page -= 1; render(); },
+            onNext: () => { view.page += 1; render(); },
+        }));
     }
 
     function renderExport(root) {

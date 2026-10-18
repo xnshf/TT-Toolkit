@@ -1,9 +1,11 @@
-import { actionButton, callout, h } from '../../ui/dom.js';
+import { actionButton, callout, h, pagerBar } from '../../ui/dom.js';
+import { searchField } from '../../ui/search-field.js';
 import { errorMessage } from '../../kernel/errors.js';
 import { logFileExportFailure } from '../../kernel/file-export.js';
 import { MIB } from '../../kernel/logging/schema.js';
 import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
+import { captureFocus, restoreFocus } from '../../ui/focus-keep.js';
 
 const PAGE_SIZE = 100;
 const LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -269,11 +271,15 @@ export function mountDeveloperLogsPage(target, props) {
         const sources = [...new Set(entries().map(({ event }) => event.source))].sort();
         const source = h('select', { dataset: { control: 'source-filter' } }, option('', '全部来源', !view.sourceFilter), sources.map(value => option(value, value, view.sourceFilter === value)));
         source.addEventListener('change', () => { view.sourceFilter = source.value; view.page = 0; render(); });
-        const search = h('input', { value: view.search, placeholder: '搜索事件或数据', dataset: { control: 'search' } });
-        search.addEventListener('input', () => {
-            view.search = search.value;
-            view.page = 0;
-            render('search');
+        const search = searchField({
+            value: view.search,
+            placeholder: '搜索事件或数据',
+            dataset: { control: 'search' },
+            onQuery: value => {
+                view.search = value;
+                view.page = 0;
+                render('search');
+            },
         });
         return h('div', { className: 'log-toolbar' }, features, sessions, source, search);
     }
@@ -328,16 +334,18 @@ export function mountDeveloperLogsPage(target, props) {
         if (!visible.length) {
             list.append(h('p', { className: 'empty-state', text: hostStatusIssues().length ? '暂无匹配的日志。' : '没有匹配的日志。' }));
         }
-        return [list, h('div', { className: 'pager' },
-            actionButton('上一页', () => { view.page -= 1; render(); }, { disabled: view.page === 0 }),
-            h('span', { text: `${view.page + 1} / ${pageCount}` }),
-            actionButton('下一页', () => { view.page += 1; render(); }, { disabled: view.page + 1 >= pageCount }),
-        )];
+        return [list, pagerBar({
+            page: view.page,
+            pageCount,
+            onPrevious: () => { view.page -= 1; render(); },
+            onNext: () => { view.page += 1; render(); },
+        })];
     }
 
     function render(focusControl = '') {
         if (disposed)
             return;
+        const snapshot = captureFocus(target) ?? (focusControl ? { key: focusControl, caret: null } : null);
         const root = h('section', { className: 'feature-page developer-logs-page' });
         const toggle = h('input', { type: 'checkbox', checked: view.enabled });
         toggle.addEventListener('change', () => {
@@ -440,12 +448,7 @@ export function mountDeveloperLogsPage(target, props) {
         ), logActionStatus());
         root.append(...logList());
         target.replaceChildren(root);
-        if (focusControl) {
-            const control = target.querySelector(`[data-control="${focusControl}"]`);
-            control?.focus();
-            if (control instanceof HTMLInputElement)
-                control.setSelectionRange(control.value.length, control.value.length);
-        }
+        restoreFocus(target, snapshot);
     }
 
     const unsubscribe = runtime.subscribe(() => render());

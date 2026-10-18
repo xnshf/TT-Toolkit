@@ -38,6 +38,11 @@ export function isConstantWorldInfoEntry(entry) {
     return entry?.disable !== true && entry?.constant === true;
 }
 
+// 可静态检测：未被当前聊天屏蔽，且不含 EJS / ST-Prompt-Template 动态内容。
+export function isAnalyzable(source) {
+    return !source.suppressedForCurrentChat && !source.dynamic;
+}
+
 export function uidKey(uid) {
     if (typeof uid !== 'string' && typeof uid !== 'number')
         return null;

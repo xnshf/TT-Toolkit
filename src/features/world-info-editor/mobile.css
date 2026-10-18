@@ -1,0 +1,175 @@
+/* 窄容器与移动端适配：单栏切换、移动端导航与全屏 Zen 写作模式。 */
+
+/* Desktop never shows the mobile navigation. */
+.wie-mobile-view-header, .wie-mobile-tabs { display: none; }
+
+/* ========================================================
+   移动端与窄容器适配 (@container & @media)
+   ======================================================== */
+@container ttk-content (max-width: 640px) {
+  .wie-root.wie-edit-view .wie-top-bar { display: none; }
+  .wie-tab-hidden { display: none !important; }
+  .wie-split-view {
+    display: flex;
+    flex-direction: column;
+  }
+  .wie-mobile-hidden { display: none !important; }
+  .wie-mobile-view-header { display: flex; }
+  .wie-mobile-tabs { display: flex; }
+  .wie-detail-header { display: none; }
+  .wie-root > .feature-header { display: none; }
+  .wie-root .wie-top-bar { padding: 8px 10px; }
+  .wie-list-pane {
+    border-right: none;
+    height: 100%;
+  }
+  .wie-detail-pane {
+    height: 100%;
+  }
+  .wie-form-row { gap: 6px; }
+  /* 窄容器下键盘余量由详情区与宿主内容区提供，这里不再叠加，避免出现两层键盘高度的空白。 */
+  .wie-form-body { flex: 0 0 auto; padding: 12px 10px 24px; }
+  .wie-mobile-tabs { flex: 0 0 auto; min-height: 44px; }
+  .wie-mobile-view-header { flex: 0 0 auto; }
+  .wie-form-control .wie-select { min-width: 0; width: 100%; }
+  .wie-form-control > div > div { flex-wrap: wrap; }
+  .wie-detail-pane { overflow-x: hidden; }
+  .wie-mobile-view-header strong { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wie-editor-toolbar { flex-wrap: wrap; gap: 6px; }
+  .wie-params-grid { grid-template-columns: minmax(0, 1fr); }
+  .wie-select { max-width: 100%; }
+  .wie-mobile-tabs .wie-mobile-tab-btn { flex: 1; }
+  .wie-top-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .wie-select {
+    min-width: 100%;
+  }
+
+  /* 手机触控目标：删除按钮、宏按键、标签输入多留出横向空间。 */
+  .wie-tag-remove {
+    width: 26px;
+    height: 26px;
+    font-size: 16px;
+  }
+  .wie-tag {
+    min-height: 30px;
+    gap: 4px;
+    padding: 1px 4px 1px 8px;
+  }
+  .wie-tag-input {
+    min-width: 100px;
+    min-height: 30px;
+  }
+  .wie-macro-key {
+    min-height: 38px;
+    padding: 6px 11px;
+    font-size: 12.5px;
+  }
+  .wie-macro-bar { padding: 5px 8px; }
+  .wie-zen-textarea { font-size: 15px; }
+  /* 键盘弹起时，详情区内容仍可滚到键盘上方，尾巴不被吞掉。 */
+  .workbench main.wie-detail-pane,
+  .workbench main.wie-host {
+    padding-bottom: var(--ttk-keyboard-inset, 0px);
+  }
+}
+
+/* 移动端专属模式下的子视图控制 */
+.wie-mobile-view-header {
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--ttk-card);
+  border-bottom: 1px solid var(--ttk-border);
+}
+
+.wie-mobile-tabs {
+  background: var(--ttk-inset);
+  border-bottom: 1px solid var(--ttk-border);
+  padding: 0 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.wie-mobile-tab-btn {
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  color: var(--ttk-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  position: relative;
+}
+.wie-mobile-tab-btn.active {
+  color: var(--ttk-text);
+  font-weight: 600;
+}
+.wie-mobile-tab-btn.active::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  background: var(--ttk-accent);
+  border-radius: 2px;
+}
+
+/* 移动端全屏 Zen 写作模式 */
+.wie-zen-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--ttk-inset);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  /* 键盘弹起时给底部让位，输入区与宏栏不会被键盘吞没。 */
+  padding-bottom: var(--ttk-keyboard-inset, 0px);
+}
+.wie-zen-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ttk-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--ttk-card);
+}
+/* Zen 内宏栏位于表头下方、输入区上方：始终在软键盘之上。 */
+.wie-zen-overlay .wie-macro-bar {
+  border-top: none;
+}
+.wie-zen-textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: none;
+  background: transparent;
+  color: var(--ttk-text);
+  font-size: 14px;
+  line-height: 1.7;
+  outline: none;
+  padding: 14px;
+  font-family: inherit;
+  resize: none;
+  box-sizing: border-box;
+  /* 键盘打开时底部留白，光标所在行不会沉到键盘后面。 */
+  padding-block-end: calc(14px + var(--ttk-keyboard-inset, 0px));
+}
+.wie-macro-key {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  background: var(--ttk-card-hover);
+  border: 1px solid var(--ttk-border);
+  border-radius: 5px;
+  color: var(--ttk-text);
+  font-family: monospace;
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.wie-macro-key:hover {
+  border-color: var(--ttk-accent);
+}

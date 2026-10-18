@@ -1,4 +1,5 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
+import { createActionRunner } from '../../ui/run-action.js';
 
 function input(value, onInput, options = {}) {
     const element = h('input', { value, ...options });
@@ -20,18 +21,20 @@ export function mountModelSettingsPage(target, props) {
     };
     let disposed = false;
 
-    const run = async task => {
-        try {
-            await task();
-            view.notice = '';
-            view.noticeKind = '';
-        }
-        catch (error) {
-            view.notice = error instanceof Error ? error.message : String(error);
-            view.noticeKind = 'danger';
-        }
-        render();
-    };
+    const run = createActionRunner({
+        notice: {
+            clear: () => {
+                view.notice = '';
+                view.noticeKind = '';
+            },
+            show: (message, kind) => {
+                view.notice = message;
+                view.noticeKind = kind;
+            },
+        },
+        clearOnSuccess: true,
+        render: () => render(),
+    });
 
     function addPreset() {
         const id = crypto.randomUUID();

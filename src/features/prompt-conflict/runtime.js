@@ -1,19 +1,10 @@
 import { errorKind, errorMessage, ToolkitError } from '../../kernel/errors.js';
-import { sha256Hex } from '../../kernel/hash.js';
-import { WORLD_INFO_LORE_LISTS, worldInfoContractFailureData } from '../../kernel/world-info.js';
+import { worldInfoContractFailureData } from '../../kernel/world-info.js';
 import { LlmPresetStore } from '../../kernel/llm-presets.js';
 import { LlmTaskService } from '../../kernel/llm-tasks.js';
-import { detectPromptTemplateEntry } from './dynamic-template.js';
 import { PromptConflictAnalysisService } from './model-analysis.js';
-import {
-    applyStagedChanges,
-    buildOverrideLookup,
-    createStagedChange,
-    filterWorldInfoPayload,
-    overrideRecordKey,
-    sameMetadata,
-    stageChange,
-} from './overrides.js';
+import { applyPreviousSelection, collectSources, summarizeSources } from './collect.js';
+import { filterWorldInfoPayload } from './overrides.js';
 import {
     createDefaultPromptConflictChatMetadata,
     createDefaultPromptConflictFeatureSettings,
@@ -21,19 +12,18 @@ import {
     parsePromptConflictChatMetadata,
     parsePromptConflictFeatureSettings,
 } from './schema.js';
+import { chunkSources, computeSnapshotFingerprint, isAnalyzable } from './sources.js';
 import {
-    chunkSources,
-    computeSnapshotFingerprint,
-    createPresetSource,
-    createWorldInfoSource,
-    isConstantWorldInfoEntry,
-} from './sources.js';
+    beginApplyReview,
+    cancelApplyReview,
+    clearStagedChanges,
+    commitStagedChanges,
+    stageRestore,
+    stageRestoreRecord,
+    stageSuppress,
+} from './staging.js';
 
 const WORLD_INFO_CONTRACT_WARNING = '宿主世界书事件结构无效，本轮未应用聊天屏蔽；下次生成会重新校验，持续出现请核对宿主版本。';
-
-function isAnalyzable(source) {
-    return !source.suppressedForCurrentChat && !source.dynamic;
-}
 
 export class PromptConflictRuntime {
     constructor(host, log, options = {}) {
@@ -250,6 +240,23 @@ export class PromptConflictRuntime {
         }
     }
 
+    // 只把「已读到但 schema 不合法」降级为可继续的 metadataError；宿主读取本身失败照常上抛，由 refresh 统一报错。
+    async readChatMetadataRecords() {
+        const raw = await this.host.getPromptConflictChatMetadata();
+        this.mutable.metadataError = '';
+        try {
+            return parsePromptConflictChatMetadata(raw).disabledWorldEntries;
+        }
+        catch (error) {
+            this.mutable.metadataError = errorMessage(error);
+            this.log?.error('metadata.parse_failed', {
+                data: { operation: 'metadata.parse', ...errorKind(error) },
+                sensitive: { error },
+            });
+            return [];
+        }
+    }
+
     async refresh() {
         if (this.mutable.phase === 'reading' || this.mutable.phase === 'detecting' || this.mutable.applying)
             return;
@@ -260,87 +267,18 @@ export class PromptConflictRuntime {
         try {
             const identity = await this.host.getCurrentChatIdentity();
             await this.loadFeatureSettings();
-            const rawMetadata = await this.host.getPromptConflictChatMetadata();
-            let records = [];
-            this.mutable.metadataError = '';
-            try {
-                records = parsePromptConflictChatMetadata(rawMetadata).disabledWorldEntries;
-            }
-            catch (error) {
-                this.mutable.metadataError = errorMessage(error);
-                this.log?.error('metadata.parse_failed', {
-                    data: { operation: 'metadata.parse', ...errorKind(error) },
-                    sensitive: { error },
-                });
-            }
-            this.metadataRecords = records;
-
-            const sources = [];
-            const presetInputs = await this.host.getPromptConflictPresetSources();
-            for (const input of presetInputs) {
-                const identifierDigest = await sha256Hex(input.identifier);
-                const contentDigest = await sha256Hex(input.content);
-                const source = createPresetSource({
-                    identifierDigest,
-                    label: input.label,
-                    role: input.role,
-                    position: input.position,
-                    order: input.order,
-                    content: input.content,
-                    contentDigest,
-                });
-                source.dynamic = detectPromptTemplateEntry({ content: input.content, comment: '' }).detected;
-                source.suppressedForCurrentChat = false;
-                sources.push(source);
-            }
-
-            const groups = await this.host.getMountedWorldInfoEntries();
-            for (const listName of WORLD_INFO_LORE_LISTS) {
-                for (const entry of groups[listName] ?? []) {
-                    if (!isConstantWorldInfoEntry(entry))
-                        continue;
-                    const worldDigest = await sha256Hex(String(entry.world ?? ''));
-                    const expanded = await this.host.expandPromptConflictSourceMacros(entry.content);
-                    const rawContentDigest = await sha256Hex(String(entry.content ?? ''));
-                    const contentDigest = await sha256Hex(expanded);
-                    const source = createWorldInfoSource({
-                        worldDigest,
-                        uid: entry.uid,
-                        worldName: String(entry.world ?? ''),
-                        label: String(entry.comment ?? `条目 ${String(entry.uid)}`),
-                        position: Number(entry.position ?? 0),
-                        order: Number(entry.order ?? 0),
-                        content: expanded,
-                        contentDigest,
-                        rawContentDigest,
-                    });
-                    source.dynamic = detectPromptTemplateEntry(entry).detected;
-                    source.suppressedForCurrentChat = records.some(record =>
-                        record.worldDigest === worldDigest
-                        && typeof record.uid === typeof entry.uid
-                        && record.uid === entry.uid
-                        && record.contentDigest === rawContentDigest);
-                    sources.push(source);
-                }
-            }
-
-            for (const source of sources)
-                source.enabledForDetection = previous.get(source.sourceId) === true && isAnalyzable(source);
-            for (const source of sources) {
-                if (isAnalyzable(source) && !previous.has(source.sourceId))
-                    source.enabledForDetection = true;
-            }
+            this.metadataRecords = await this.readChatMetadataRecords();
+            const sources = await collectSources(this.host, this.metadataRecords);
+            applyPreviousSelection(sources, previous);
             const fingerprint = await computeSnapshotFingerprint(sources);
             this.mutable.snapshot = { fingerprint, identity, sources };
             this.mutable.selectedSourceIds = new Set(sources.filter(source => source.enabledForDetection).map(source => source.sourceId));
             this.mutable.chatIdentity = identity;
             this.mutable.reportStale = this.computeReportStale();
             this.mutable.phase = 'idle';
-            const analyzable = sources.filter(isAnalyzable).length;
-            const suppressed = sources.filter(source => source.suppressedForCurrentChat).length;
-            const unsupported = sources.filter(source => source.dynamic && !source.suppressedForCurrentChat).length;
-            this.mutable.status = `已读取当前聊天来源：可检测 ${analyzable}、已屏蔽 ${suppressed}、无法静态检测 ${unsupported}。`;
-            this.log?.debug('snapshot.refreshed', { data: { sourceCount: sources.length, analyzable, suppressed, unsupported } });
+            const counts = summarizeSources(sources);
+            this.mutable.status = `已读取当前聊天来源：可检测 ${counts.analyzable}、已屏蔽 ${counts.suppressed}、无法静态检测 ${counts.unsupported}。`;
+            this.log?.debug('snapshot.refreshed', { data: { sourceCount: sources.length, ...counts } });
         }
         catch (error) {
             this.mutable.phase = 'idle';
@@ -404,133 +342,31 @@ export class PromptConflictRuntime {
     }
 
     stageSuppress(sourceId) {
-        const source = this.snapshotSources().find(candidate => candidate.sourceId === sourceId);
-        if (!source || source.sourceType !== 'world-info' || source.suppressedForCurrentChat)
-            return;
-        const change = createStagedChange({
-            sourceId,
-            worldDigest: source.worldDigest,
-            uid: source.uid,
-            contentDigest: source.rawContentDigest,
-            action: 'suppress',
-            dynamic: source.dynamic,
-        });
-        this.mutable.stagedChanges = stageChange(this.mutable.stagedChanges, change);
-        this.log?.debug('staged.suppressed', { data: { changeCount: this.mutable.stagedChanges.size } });
-        this.notify();
+        return stageSuppress(this, sourceId);
     }
 
     stageRestore(sourceId) {
-        const source = this.snapshotSources().find(candidate => candidate.sourceId === sourceId);
-        if (!source || source.sourceType !== 'world-info' || !source.suppressedForCurrentChat)
-            return;
-        const change = createStagedChange({
-            sourceId,
-            worldDigest: source.worldDigest,
-            uid: source.uid,
-            contentDigest: source.rawContentDigest,
-            action: 'restore',
-            dynamic: source.dynamic,
-        });
-        this.mutable.stagedChanges = stageChange(this.mutable.stagedChanges, change);
-        this.log?.debug('staged.restored', { data: { changeCount: this.mutable.stagedChanges.size } });
-        this.notify();
+        return stageRestore(this, sourceId);
     }
 
     stageRestoreRecord(record) {
-        const key = overrideRecordKey(record);
-        const existing = this.snapshotSources().find(source =>
-            source.sourceType === 'world-info'
-            && `${source.worldDigest}:${typeof source.uid}:${String(source.uid)}` === key);
-        const sourceId = existing?.sourceId ?? `wi:${record.worldDigest}:${String(record.uid)}`;
-        const change = createStagedChange({
-            sourceId,
-            worldDigest: record.worldDigest,
-            uid: record.uid,
-            contentDigest: record.contentDigest,
-            action: 'restore',
-            dynamic: false,
-        });
-        this.mutable.stagedChanges = stageChange(this.mutable.stagedChanges, change);
-        this.notify();
+        return stageRestoreRecord(this, record);
     }
 
     clearStagedChanges() {
-        this.mutable.stagedChanges = new Map();
-        this.notify();
+        return clearStagedChanges(this);
     }
 
-    async beginApplyReview() {
-        if (this.mutable.applying || !this.mutable.stagedChanges.size)
-            return;
-        try {
-            const identity = await this.host.getCurrentChatIdentity();
-            this.applyAnchorStableId = identity.stableId;
-            this.mutable.applying = true;
-            this.mutable.phase = 'applying';
-            this.mutable.error = '';
-            this.notify();
-        }
-        catch (error) {
-            this.log?.error('apply.review_failed', { data: { operation: 'apply.review', ...errorKind(error) }, sensitive: { error } });
-            this.setError(errorMessage(error), 'apply.review_failed');
-        }
+    beginApplyReview() {
+        return beginApplyReview(this);
     }
 
     cancelApplyReview() {
-        this.mutable.applying = false;
-        this.mutable.phase = 'idle';
-        this.applyAnchorStableId = null;
-        this.notify();
+        return cancelApplyReview(this);
     }
 
-    async commitStagedChanges() {
-        const plan = this.mutable.stagedChanges;
-        if (!this.mutable.applying || !plan.size) {
-            this.cancelApplyReview();
-            return;
-        }
-        let suppressedCount = 0;
-        let restoredCount = 0;
-        try {
-            const identity = await this.host.getCurrentChatIdentity();
-            if (identity.stableId !== this.applyAnchorStableId)
-                throw new ToolkitError('CHAT_CHANGED', '应用前聊天已切换，未写入任何变更，请重新检查。');
-            const metadata = parsePromptConflictChatMetadata(await this.host.getPromptConflictChatMetadata());
-            const groups = await this.host.getMountedWorldInfoEntries();
-            const lookup = await buildOverrideLookup(groups);
-            for (const change of plan.values()) {
-                const key = overrideRecordKey(change);
-                if (change.action === 'suppress') {
-                    const entryInfo = lookup.get(key);
-                    if (!entryInfo || entryInfo.contentDigest !== change.contentDigest)
-                        throw new ToolkitError('PROMPT_CONFLICT_ENTRY_CHANGED', '目标世界书条目已删除、已修改或已变为非常驻，未写入任何变更，请重新检查暂存计划。');
-                }
-                else if (!metadata.disabledWorldEntries.some(record => overrideRecordKey(record) === key)) {
-                    throw new ToolkitError('PROMPT_CONFLICT_OVERRIDE_STALE', '待恢复的屏蔽记录已不存在，未写入任何变更，请重新检查暂存计划。');
-                }
-            }
-            const next = applyStagedChanges(metadata, plan);
-            if (!sameMetadata(metadata, next))
-                await this.host.setPromptConflictChatMetadata(identity.stableId, next);
-            suppressedCount = [...plan.values()].filter(change => change.action === 'suppress').length;
-            restoredCount = [...plan.values()].filter(change => change.action === 'restore').length;
-            this.mutable.stagedChanges = new Map();
-            this.mutable.applying = false;
-            this.mutable.applyAnchorStableId = null;
-            await this.refresh();
-            this.mutable.status = `已写入当前聊天：屏蔽 ${suppressedCount} 项，恢复 ${restoredCount} 项。`;
-            this.log?.info('overrides.committed', { data: { suppressedCount, restoredCount } });
-        }
-        catch (error) {
-            this.mutable.applying = false;
-            this.mutable.applyAnchorStableId = null;
-            this.log?.error('overrides.commit_failed', {
-                data: { operation: 'overrides.commit', ...errorKind(error) },
-                sensitive: { error },
-            });
-            this.setError(errorMessage(error), 'overrides.commit_failed');
-        }
+    commitStagedChanges() {
+        return commitStagedChanges(this);
     }
 
     async runDetection() {

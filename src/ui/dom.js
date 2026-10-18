@@ -36,6 +36,15 @@ export function actionButton(text, onClick, options = {}) {
     return h('button', { type: 'button', text, on: { click: onClick }, ...options });
 }
 
+// 统一分页条：页码显示与首/末页禁用逻辑集中一处，页面只提供换页回调。
+export function pagerBar({ page, pageCount, onPrevious, onNext }) {
+    return h('div', { className: 'pager' },
+        actionButton('上一页', onPrevious, { disabled: page === 0 }),
+        h('span', { text: `${page + 1} / ${pageCount}` }),
+        actionButton('下一页', onNext, { disabled: page + 1 >= pageCount }),
+    );
+}
+
 // 横向滚动容器两端的渐隐提示:滚动未到端点时对应侧出现渐隐。
 // 返回 update 以便内容替换(如导航重渲染)后重新判定,窗口尺寸变化由 ResizeObserver 覆盖。
 export function bindScrollFade(element) {

@@ -8,4 +8,6 @@
 @import './src/features/model-settings/style.css';
 @import './src/features/world-info-ai/style.css';
 @import './src/features/world-info-editor/style.css';
+@import './src/features/world-info-editor/detail.css';
+@import './src/features/world-info-editor/mobile.css';
 @import './src/features/prompt-conflict/style.css';

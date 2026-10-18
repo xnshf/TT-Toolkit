@@ -1,5 +1,7 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
+import { searchField } from '../../ui/search-field.js';
 import { ToolkitError, errorMessage } from '../../kernel/errors.js';
+import { createActionRunner } from '../../ui/run-action.js';
 import {
     SOURCE_LABELS,
     SOURCE_ORDER,
@@ -100,19 +102,17 @@ export function mountPromptViewerPage(target, props) {
         exporting: false,
     };
     let disposed = false;
+    let resultsHost = null;
 
     const currentSnapshot = () => (view.tab === 'prediction' ? runtime.state.prediction : runtime.state.snapshot);
 
-    const run = async task => {
-        try {
-            view.notice = '';
-            await task();
-        }
-        catch (error) {
-            view.notice = errorMessage(error);
-        }
-        render();
-    };
+    const run = createActionRunner({
+        notice: {
+            clear: () => { view.notice = ''; },
+            show: message => { view.notice = message; },
+        },
+        render: () => render(),
+    });
 
     async function copyCurrent() {
         const snapshot = currentSnapshot();
@@ -246,16 +246,13 @@ export function mountPromptViewerPage(target, props) {
             view.filterSource = select.value;
             render();
         });
-        const search = h('input', {
-            className: 'prompt-search-input',
-            type: 'search',
+        const search = searchField({
             value: view.query,
+            className: 'prompt-search-input',
             placeholder: '搜索正文或条目名称',
-            attrs: { 'aria-label': '搜索提示词' },
-        });
-        search.addEventListener('input', () => {
-            view.query = search.value;
-            render();
+            ariaLabel: '搜索提示词',
+            // 只重绘结果区：重建整个页面会把正在输入的搜索框一起替换掉。
+            onQuery: value => { view.query = value; renderResults(); },
         });
         root.append(h('div', { className: 'prompt-toolbar' },
             select,
@@ -378,6 +375,15 @@ export function mountPromptViewerPage(target, props) {
         ));
     }
 
+    function renderResults() {
+        if (!resultsHost)
+            return;
+        const snapshot = currentSnapshot();
+        resultsHost.replaceChildren();
+        if (snapshot)
+            renderItems(resultsHost, snapshot);
+    }
+
     function render() {
         if (disposed)
             return;
@@ -402,9 +408,12 @@ export function mountPromptViewerPage(target, props) {
         renderToolbar(root, snapshot);
         if (snapshot) {
             renderWorldPanel(root, snapshot);
-            renderItems(root, snapshot);
+            resultsHost = h('div', { className: 'prompt-results' });
+            renderItems(resultsHost, snapshot);
+            root.append(resultsHost);
         }
         else {
+            resultsHost = null;
             root.append(callout(view.tab === 'prediction'
                 ? '输入一段假设的用户消息后点击“预测”。'
                 : '尚未捕获正文轮次；在宿主中发送一条消息后再查看。'));

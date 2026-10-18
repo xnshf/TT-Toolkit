@@ -1,5 +1,7 @@
-import { actionButton, callout, h } from '../../ui/dom.js';
+import { actionButton, callout, h, pagerBar } from '../../ui/dom.js';
+import { searchField } from '../../ui/search-field.js';
 import { errorMessage } from '../../kernel/errors.js';
+import { createActionRunner } from '../../ui/run-action.js';
 import {
     defaultChatRange,
     paginateChatItems,
@@ -161,16 +163,13 @@ export function mountChatViewerPage(target, props) {
         view.expanded = null;
     }
 
-    const run = async task => {
-        try {
-            view.notice = '';
-            await task();
-        }
-        catch (error) {
-            view.notice = errorMessage(error);
-        }
-        render();
-    };
+    const run = createActionRunner({
+        notice: {
+            clear: () => { view.notice = ''; },
+            show: message => { view.notice = message; },
+        },
+        render: () => render(),
+    });
 
     function renderHeader(root) {
         const toggle = h('input', { type: 'checkbox', checked: view.enabled });
@@ -240,11 +239,13 @@ export function mountChatViewerPage(target, props) {
     }
 
     function renderSearch(root) {
-        const query = h('input', { className: 'viewer-search-input', type: 'search', value: view.query, placeholder: '输入正文关键词', attrs: { 'aria-label': '正文关键词' } });
-        query.addEventListener('input', () => { view.query = query.value; });
-        query.addEventListener('keydown', event => {
-            if (event.key === 'Enter')
-                root.querySelector('[data-viewer-search]')?.click();
+        const query = searchField({
+            value: view.query,
+            className: 'viewer-search-input',
+            placeholder: '输入正文关键词',
+            ariaLabel: '正文关键词',
+            onQuery: value => { view.query = value; },
+            onEnter: () => root.querySelector('[data-viewer-search]')?.click(),
         });
         root.append(h('section', { className: 'viewer-search-controls' },
             query,
@@ -277,11 +278,12 @@ export function mountChatViewerPage(target, props) {
             return;
         }
         root.append(h('div', { className: 'viewer-message-list' }, pagination.items.map(item => messageCard(item, view, runtime, props, render))));
-        root.append(h('div', { className: 'pager' },
-            actionButton('上一页', () => { view.page -= 1; view.expanded = null; render(); }, { disabled: pagination.page === 0 }),
-            h('span', { text: `${pagination.page + 1} / ${pagination.pageCount}` }),
-            actionButton('下一页', () => { view.page += 1; view.expanded = null; render(); }, { disabled: pagination.page + 1 >= pagination.pageCount }),
-        ));
+        root.append(pagerBar({
+            page: pagination.page,
+            pageCount: pagination.pageCount,
+            onPrevious: () => { view.page -= 1; view.expanded = null; render(); },
+            onNext: () => { view.page += 1; view.expanded = null; render(); },
+        }));
     }
 
     function render() {

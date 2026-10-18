@@ -1,4 +1,6 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
+import { searchField } from '../../ui/search-field.js';
+import { captureFocus, restoreFocus } from '../../ui/focus-keep.js';
 import { confirmDanger } from '../../ui/confirm.js';
 import {
     detectPromptTemplateEntry, isAiModeEligible, parseConfigExchange,
@@ -332,8 +334,12 @@ export function mountWorldInfoAiPage(target, props) {
         }
         const enabled = control('input', 'world-enabled', { type: 'checkbox', checked: view.draft.enabled, disabled: locked() });
         enabled.addEventListener('change', () => { view.draft.enabled = enabled.checked; render(); });
-        const search = control('input', 'search', { type: 'search', value: view.filter, placeholder: '搜索标题 / 接管条件' });
-        search.addEventListener('input', () => { view.filter = search.value; render(); });
+        const search = searchField({
+            value: view.filter,
+            placeholder: '搜索标题 / 接管条件',
+            dataset: { control: 'search' },
+            onQuery: value => { view.filter = value; render(); },
+        });
         const file = control('input', 'import', { type: 'file', accept: '.json,application/json', disabled: locked() });
         file.addEventListener('change', () => { const selected = file.files?.[0]; void run(() => importFile(selected)); });
         const entries = visibleEntries();
@@ -396,12 +402,10 @@ export function mountWorldInfoAiPage(target, props) {
     function render() {
         if (disposed) return;
         // Stable keys restore focus, caret, scroll and disclosures across runtime updates.
-        const focused = target.contains(target.ownerDocument.activeElement) ? target.ownerDocument.activeElement : null;
-        const focusedKey = focused?.dataset.control;
-        if (focusedKey) pendingFocus = { key: focusedKey,
-            caret: 'selectionStart' in focused ? [focused.selectionStart, focused.selectionEnd] : null };
-        const canRestore = focused || target.ownerDocument.activeElement === target.ownerDocument.body;
-        const { key, caret } = canRestore && pendingFocus ? pendingFocus : {};
+        const captured = captureFocus(target);
+        if (captured) pendingFocus = captured;
+        const canRestore = captured || target.ownerDocument.activeElement === target.ownerDocument.body;
+        const snapshot = canRestore ? pendingFocus : null;
         const openDetails = new Set([...target.querySelectorAll('details[open]')].map(node => node.dataset.detail));
         const entryScroll = target.querySelector('.world-ai-entries')?.scrollTop ?? 0;
         const roundScroll = target.querySelector('.world-ai-round-list')?.scrollTop ?? 0;
@@ -426,16 +430,7 @@ export function mountWorldInfoAiPage(target, props) {
         if (scroller) scroller.scrollTop = entryScroll;
         const roundScroller = target.querySelector('.world-ai-round-list');
         if (roundScroller) roundScroller.scrollTop = roundScroll;
-        if (key) {
-            const next = [...target.querySelectorAll('[data-control]')].find(node => node.dataset.control === key);
-            if (next && !next.disabled) {
-                next.focus({ preventScroll: true });
-                if (caret && caret[0] !== null && next.setSelectionRange && ['textarea', 'input'].includes(next.localName)) {
-                    try { next.setSelectionRange(...caret); } catch { /* Number fields have no text selection. */ }
-                }
-                pendingFocus = null;
-            }
-        }
+        if (restoreFocus(target, snapshot)) pendingFocus = null;
         if (pageScroll !== undefined) target.parentElement.scrollTop = pageScroll;
     }
     function update() {

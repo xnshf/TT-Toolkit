@@ -1,7 +1,8 @@
-import { actionButton, callout, h } from '../../ui/dom.js';
+import { actionButton, callout, h, pagerBar } from '../../ui/dom.js';
 import { errorMessage } from '../../kernel/errors.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 import { confirmDanger } from '../../ui/confirm.js';
+import { createActionRunner } from '../../ui/run-action.js';
 
 const PAGE_SIZE = 20;
 const TABS = [['manual', '手动清洗'], ['rules', '规则设置'], ['auto', '自动清洗'], ['status', '运行状态']];
@@ -57,16 +58,10 @@ export function mountChatCleanerPage(target, props) {
     let disposed = false;
     const notices = createNoticeController(() => render());
 
-    const run = async task => {
-        notices.clear();
-        try {
-            await task();
-        }
-        catch (error) {
-            notices.show(errorMessage(error), 'danger');
-        }
-        render();
-    };
+    const run = createActionRunner({
+        notices,
+        render: () => render(),
+    });
 
     function renderHeader(root) {
         const toggle = h('input', { type: 'checkbox', checked: view.enabled });
@@ -177,11 +172,12 @@ export function mountChatCleanerPage(target, props) {
                     row.append(h('div', { className: 'diff-grid' }, h('pre', { text: item.before }), h('pre', { text: item.after })));
                 return row;
             })));
-            section.append(h('div', { className: 'pager' },
-                actionButton('上一页', () => { view.page -= 1; render(); }, { disabled: view.page === 0 }),
-                h('span', { text: `${view.page + 1} / ${pageCount}` }),
-                actionButton('下一页', () => { view.page += 1; render(); }, { disabled: view.page + 1 >= pageCount }),
-            ));
+            section.append(pagerBar({
+                page: view.page,
+                pageCount,
+                onPrevious: () => { view.page -= 1; render(); },
+                onNext: () => { view.page += 1; render(); },
+            }));
         }
         root.append(section);
     }
