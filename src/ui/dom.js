@@ -12,6 +12,10 @@ export function h(tag, properties = {}, ...children) {
         else if (key === 'attrs')
             for (const [name, attribute] of Object.entries(value))
                 node.setAttribute(name, String(attribute));
+        // ariaLabel 走属性通道：它既不是 DOM 属性，也不是合法的 JS 属性名，
+        // 直接 setAttribute('ariaLabel') 会写成 arialabel，读屏器读不到。
+        else if (key === 'ariaLabel')
+            node.setAttribute('aria-label', String(value));
         else if (key === 'on')
             for (const [event, listener] of Object.entries(value))
                 node.addEventListener(event, listener);

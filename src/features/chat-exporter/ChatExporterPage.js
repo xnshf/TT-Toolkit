@@ -3,6 +3,7 @@ import { actionButton, callout, h, pagerBar } from '../../ui/dom.js';
 import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 import { createActionRunner } from '../../ui/run-action.js';
+import { unsavedChangesGuard } from '../../ui/leave-guard.js';
 
 const PAGE_SIZE = 20;
 const TABS = [['export', '导出'], ['rules', '规则设置']];
@@ -11,9 +12,10 @@ function option(value, label, selected) {
     return h('option', { value, text: label, selected });
 }
 
+// 用 <label> 包裹标题与控件：可点击标题聚焦控件，控件也能从标题获得可访问名称。
 function settingRow(title, description, control) {
-    return h('div', { className: 'setting-row' },
-        h('div', {}, h('strong', { text: title }), description ? h('small', { text: description }) : null),
+    return h('label', { className: 'setting-row' },
+        h('span', {}, h('strong', { text: title }), description ? h('small', { text: description }) : null),
         control,
     );
 }
@@ -39,9 +41,10 @@ function statsGrid(plan) {
 
 function createRuleRow(group, kind, rule, index, render, dirty) {
     const rules = group[kind === 'include' ? 'includeRules' : 'excludeRules'];
-    const enabled = h('input', { type: 'checkbox', checked: rule.enabled, title: '启用规则' });
-    const start = h('input', { value: rule.start, placeholder: '开始标记' });
-    const end = h('input', { value: rule.end, placeholder: kind === 'include' ? '结束标记（必填）' : '结束标记（可单独使用）' });
+    const name = kind === 'include' ? '正选' : '反选';
+    const enabled = h('input', { type: 'checkbox', checked: rule.enabled, attrs: { 'aria-label': `启用第 ${index + 1} 条${name}规则` } });
+    const start = h('input', { value: rule.start, placeholder: '开始标记', attrs: { 'aria-label': `第 ${index + 1} 条${name}规则的开始标记` } });
+    const end = h('input', { value: rule.end, placeholder: kind === 'include' ? '结束标记（必填）' : '结束标记（可单独使用）', attrs: { 'aria-label': `第 ${index + 1} 条${name}规则的结束标记` } });
     enabled.addEventListener('change', () => { rule.enabled = enabled.checked; dirty(); });
     start.addEventListener('input', () => { rule.start = start.value; dirty(); });
     end.addEventListener('input', () => { rule.end = end.value; dirty(); });
@@ -54,7 +57,7 @@ function createRuleRow(group, kind, rule, index, render, dirty) {
                 dirty();
                 render();
             }
-        }),
+        }, { ariaLabel: `上移第 ${index + 1} 条${name}规则`, disabled: index === 0 }),
         actionButton('↓', () => {
             if (index + 1 < rules.length) {
                 const [moved] = rules.splice(index, 1);
@@ -62,8 +65,8 @@ function createRuleRow(group, kind, rule, index, render, dirty) {
                 dirty();
                 render();
             }
-        }),
-        actionButton('删除', () => { rules.splice(index, 1); dirty(); render(); }),
+        }, { ariaLabel: `下移第 ${index + 1} 条${name}规则`, disabled: index + 1 >= rules.length }),
+        actionButton('删除', () => { rules.splice(index, 1); dirty(); render(); }, { ariaLabel: `删除第 ${index + 1} 条${name}规则` }),
     );
 }
 
@@ -83,6 +86,13 @@ export function mountChatExporterPage(target, props) {
     };
     let disposed = false;
     const notices = createNoticeController(() => render());
+
+    // 规则与本次导出设置都是未落盘的草稿；离开前必须问一次。
+    props.setLeaveGuard?.(unsavedChangesGuard(target.ownerDocument, {
+        isDirty: () => view.dirty,
+        title: '有未保存的导出设置',
+        message: '导出规则或本次导出设置的改动尚未保存，继续离开不会写入。已生成的预览会失效，聊天不会被改动。',
+    }));
 
     function markDirty() {
         view.dirty = true;

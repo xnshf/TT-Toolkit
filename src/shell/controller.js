@@ -306,7 +306,7 @@ export class ShellController {
 
   toggleWorkbench() {
     if (this.overlay.style.display === 'none') this.openWorkbench();
-    else this.closeWorkbench();
+    else void this.closeWorkbench();
   }
 
   openWorkbench(focusTarget = this.launcherButton) {
@@ -317,7 +317,10 @@ export class ShellController {
     this.iframe?.contentWindow?.focus();
   }
 
-  closeWorkbench() {
+  // 关闭前询问当前功能的未保存草稿（询问在 iframe 内进行）；
+  // 被拒绝时工作台保持原样，不隐藏、不迁移焦点。
+  async closeWorkbench() {
+    if (this.app?.hasLeaveGuard() && !await this.app.requestLeave()) return;
     this.overlay.style.setProperty('display', 'none', 'important');
     const target = this.launcher.style.display === 'none'
       ? this.wandEntry?.focusTarget

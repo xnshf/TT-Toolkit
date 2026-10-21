@@ -1,4 +1,5 @@
 import { actionButton, bindScrollFade, h } from '../ui/dom.js';
+import { confirmDanger } from '../ui/confirm.js';
 
 function taxonomy(features) {
     const categories = new Map();
@@ -26,6 +27,10 @@ export class ToolkitApp {
     disposeFeature = null;
     updateCategoryFade = null;
     updateFeatureFade = null;
+    // 当前功能自己注册的草稿检查函数；为空表示离开无需询问。
+    leaveGuard = null;
+    // 询问进行中的 Promise：连点 ✕ 或按住 Esc 只会弹出一个对话框。
+    leaveRequest = null;
 
     constructor(target, props) {
         this.target = target;
@@ -92,6 +97,38 @@ export class ToolkitApp {
         this.layoutWarning.hidden = !message;
     }
 
+    // 是否有功能注册了草稿检查。外壳据此走同步快路径：无草稿时关闭与切换保持同步生效。
+    hasLeaveGuard() {
+        return typeof this.leaveGuard === 'function';
+    }
+
+    // 离开当前功能前的唯一询问入口：关闭工作台与切换功能都走这里。
+    // 询问在 iframe 内进行；返回 false 表示用户选择留在当前页面。
+    async requestLeave() {
+        if (this.leaveRequest)
+            return this.leaveRequest;
+        const guard = this.leaveGuard;
+        if (!guard)
+            return true;
+        this.leaveRequest = (async () => {
+            try {
+                return await guard() === true;
+            }
+            catch {
+                // 守卫自身异常时不能把用户锁死在工作台里：改用一次明确的兜底确认。
+                return confirmDanger(this.target.ownerDocument, {
+                    title: '未保存状态无法确认',
+                    message: '检查未保存修改时出错。继续离开可能丢弃当前改动。',
+                    confirmLabel: '仍然离开',
+                });
+            }
+            finally {
+                this.leaveRequest = null;
+            }
+        })();
+        return this.leaveRequest;
+    }
+
     // 窗口四周露出遮罩:点击工作台外或按 Esc 关闭;确认框打开时 Esc 交给 dialog。
     bindFrameDismiss() {
         const doc = this.target.ownerDocument;
@@ -109,6 +146,13 @@ export class ToolkitApp {
     }
 
     async navigate(route) {
+        // 同一路由不重复询问与重绘。
+        if (route === this.route)
+            return;
+        // 被用户拒绝时保持当前路由与 DOM 原样，草稿不被丢弃。
+        if (!await this.requestLeave())
+            return;
+        this.leaveGuard = null;
         this.route = route;
         this.renderNavigation();
         const persistRoute = this.props.setRoute(route);
@@ -163,6 +207,8 @@ export class ToolkitApp {
 
     async renderMain() {
         const token = ++this.renderToken;
+        // 守卫属于“当前已挂载的功能”，换页时先清除，避免上一个功能的旧检查被复用。
+        this.leaveGuard = null;
         this.disposeFeature?.();
         this.disposeFeature = null;
         if (this.route === 'overview') {
@@ -201,6 +247,11 @@ export class ToolkitApp {
                 closeWorkbench: this.props.close,
                 entrySettings: this.props.entrySettings,
                 themeSettings: this.props.themeSettings,
+                // 功能页据此注册自己的草稿检查；晚于本次渲染的注册直接丢弃。
+                setLeaveGuard: guard => {
+                    if (token === this.renderToken)
+                        this.leaveGuard = typeof guard === 'function' ? guard : null;
+                },
                 setEnabled: async value => {
                     await this.props.setFeatureEnabled(feature.id, value);
                     this.renderNavigation();
@@ -221,6 +272,8 @@ export class ToolkitApp {
 
     unmount() {
         this.renderToken += 1;
+        this.leaveGuard = null;
+        this.leaveRequest = null;
         this.disposeFeature?.();
         const doc = this.target.ownerDocument;
         doc.removeEventListener('keydown', this.onKeyDown);

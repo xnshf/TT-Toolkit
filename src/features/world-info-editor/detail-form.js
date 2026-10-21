@@ -59,6 +59,11 @@ function labelledCheckbox(label, read, write, className = 'wie-checkbox-label') 
     return h('label', { className }, checkbox(read, write), h('span', { text: label }));
 }
 
+// 参数项用 <label> 包裹标题与控件：标题即控件的可访问名称，点击标题也能聚焦控件。
+function paramItem(caption, control) {
+    return h('label', { className: 'wie-param-item' }, h('span', { text: caption }), control);
+}
+
 // 右侧详情表单：按条目字段分组拆成四个区块，每个区块只依赖自己的控件与 runtime。
 export function createDetailForm({ runtime, view, render, saveManually, scheduleScroll, renderTagEditor }) {
     const bind = (field, options) => input => {
@@ -74,6 +79,7 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
             className: 'wie-input-text',
             value: draft.comment,
             placeholder: '用于辨识条目的注释标题',
+            attrs: { 'aria-label': '标题 / 注释' },
         });
         commentInput.addEventListener('input', () => {
             runtime.updateDraftField('comment', commentInput.value);
@@ -92,7 +98,7 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
 
         // 二级触发词与逻辑
         const selectiveChk = checkbox(draft.selective, checked => runtime.updateDraftField('selective', checked));
-        const logicSelect = h('select', { className: 'wie-select', style: 'padding: 4px 8px; font-size: 12px;' });
+        const logicSelect = h('select', { className: 'wie-select', style: 'padding: 4px 8px; font-size: 12px;', attrs: { 'aria-label': '二级过滤词匹配关系' } });
         for (const opt of SELECTIVE_LOGIC_OPTIONS) {
             logicSelect.append(h('option', { value: String(opt.value), text: opt.label, selected: draft.selectiveLogic === opt.value }));
         }
@@ -144,7 +150,8 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
         const textarea = h('textarea', {
             className: 'wie-textarea',
             value: draft.content,
-            placeholder: '在此输入条目世界观正文设定...',
+            placeholder: '在此输入条目世界观正文设定…',
+            attrs: { 'aria-label': '条目正文内容' },
         });
         textarea.addEventListener('input', () => {
             runtime.updateDraftField('content', textarea.value);
@@ -197,7 +204,7 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
         const orderInput = bind('order')(h('input', { type: 'number', className: 'wie-input-text', value: String(draft.order ?? 100), step: 10 }));
         const probInput = bind('probability', { min: 1, max: 100 })(h('input', { type: 'number', className: 'wie-input-text', value: String(draft.probability ?? 100), min: 1, max: 100 }));
 
-        const outletInput = h('input', { className: 'wie-input-text', value: draft.outletName ?? '', placeholder: '宿主 Outlet 名称' });
+        const outletInput = h('input', { className: 'wie-input-text', value: draft.outletName ?? '', placeholder: '宿主 Outlet 名称', attrs: { 'aria-label': 'Outlet 名称' } });
         outletInput.addEventListener('input', () => runtime.updateDraftField('outletName', outletInput.value));
         const roleSelect = h('select', { className: 'wie-input-text' });
         for (const r of ROLE_OPTIONS) {
@@ -210,16 +217,16 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
         return h('section', { className: tabClass('timing') },
             sectionHeader('📍 注入时机与位置 (Placement)', '决定条目拼接在上下文中的位置、深度和先后次序'),
             h('div', { className: 'wie-params-grid' },
-                h('div', { className: 'wie-param-item' }, h('label', { text: '插入位置 (Position)' }), posSelect),
+                paramItem('插入位置 (Position)', posSelect),
                 draft.position === 4
-                    ? h('div', { className: 'wie-param-item' }, h('label', { text: '注入深度 (Depth)' }), depthInput)
+                    ? paramItem('注入深度 (Depth)', depthInput)
                     : null,
                 draft.position === 7
-                    ? h('div', { className: 'wie-param-item' }, h('label', { text: 'Outlet 名称' }), outletInput)
+                    ? paramItem('Outlet 名称', outletInput)
                     : null,
-                h('div', { className: 'wie-param-item' }, h('label', { text: '顺序 (Order)' }), orderInput),
-                h('div', { className: 'wie-param-item' }, h('label', { text: '概率 (%)' }), probInput),
-                h('div', { className: 'wie-param-item' }, h('label', { text: '角色 (Role)' }), roleSelect),
+                paramItem('顺序 (Order)', orderInput),
+                paramItem('概率 (%)', probInput),
+                paramItem('角色 (Role)', roleSelect),
             ),
         );
     }
@@ -241,7 +248,7 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
         const scanDepthInput = bind('scanDepth', { min: 0, nullable: true })(h('input', { type: 'number', className: 'wie-input-text', value: String(draft.scanDepth ?? ''), placeholder: '默认扫描' }));
         const groupWeightInput = bind('groupWeight', { min: 0 })(h('input', { type: 'number', className: 'wie-input-text', value: String(draft.groupWeight ?? 100) }));
 
-        const groupInput = h('input', { type: 'text', className: 'wie-input-text', value: draft.group || '', placeholder: '如: factions' });
+        const groupInput = h('input', { type: 'text', className: 'wie-input-text', value: draft.group || '', placeholder: '如: factions', attrs: { 'aria-label': '互斥分组 (Group)' } });
         groupInput.addEventListener('input', () => {
             runtime.updateDraftField('group', groupInput.value);
         });
@@ -251,14 +258,14 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
             style: view.accordionOpen || view.mobileTab === 'advanced' ? 'display: flex;' : 'display: none;',
         },
             h('div', { className: 'wie-params-grid' },
-                h('div', { className: 'wie-param-item' }, h('label', { text: 'Sticky (保持轮数)' }), stickyInput),
-                h('div', { className: 'wie-param-item' }, h('label', { text: 'Cooldown (冷却轮数)' }), cooldownInput),
-                h('div', { className: 'wie-param-item' }, h('label', { text: 'Delay (延迟轮数)' }), delayInput),
-                h('div', { className: 'wie-param-item' }, h('label', { text: '扫描深度 (Scan Depth)' }), scanDepthInput),
+                paramItem('Sticky (保持轮数)', stickyInput),
+                paramItem('Cooldown (冷却轮数)', cooldownInput),
+                paramItem('Delay (延迟轮数)', delayInput),
+                paramItem('扫描深度 (Scan Depth)', scanDepthInput),
             ),
             h('div', { className: 'wie-params-grid' },
-                h('div', { className: 'wie-param-item' }, h('label', { text: '互斥分组 (Group)' }), groupInput),
-                h('div', { className: 'wie-param-item' }, h('label', { text: '分组权重 (Weight)' }), groupWeightInput),
+                paramItem('互斥分组 (Group)', groupInput),
+                paramItem('分组权重 (Weight)', groupWeightInput),
             ),
             h('div', { className: 'wie-checkbox-group' },
                 labelledCheckbox('覆盖同组 (Group Override)', draft.groupOverride, checked => runtime.updateDraftField('groupOverride', checked)),

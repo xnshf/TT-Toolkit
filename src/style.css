@@ -156,7 +156,8 @@
 .workbench-body { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(156px,180px) minmax(0,1fr); grid-template-rows: auto minmax(0,1fr); }
 
 /* ---------- 两级导航 ---------- */
-.category-navigation, .feature-navigation { min-width: 0; overflow: auto; }
+/* overscroll-behavior: contain：横向导航与内容区滚到端点时不再把滚动链传导给宿主页面。 */
+.category-navigation, .feature-navigation { min-width: 0; overflow: auto; overscroll-behavior: contain; }
 .category-navigation {
     grid-column: 1/3;
     grid-row: 1;
@@ -229,6 +230,8 @@
     min-width: 0;
     min-height: 0;
     overflow: auto;
+    /* 滚动到末尾时阻断滚动链，否则同源 iframe 会把滚动传给宿主聊天页。 */
+    overscroll-behavior: contain;
     padding: 24px;
     container: ttk-content / inline-size;
 }
@@ -467,6 +470,6 @@ html[data-ttk-surface] :focus-visible {
     .feature-action-bar { align-items: stretch; flex-direction: column; }
     .feature-action-bar .actions { width: 100%; margin-left: 0; }
     .feature-action-bar .actions button { flex: 1 1 auto; }
-    .feature-tabs { overflow-x: auto; scrollbar-width: thin; }
+    .feature-tabs { overflow-x: auto; overscroll-behavior: contain; scrollbar-width: thin; }
     .feature-tabs button { flex: 0 0 auto; white-space: nowrap; }
 }

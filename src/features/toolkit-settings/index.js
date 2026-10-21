@@ -1,6 +1,7 @@
 import { actionButton, h } from '../../ui/dom.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 import { THEMES } from '../../ui/theme.js';
+import { unsavedChangesGuard } from '../../ui/leave-guard.js';
 
 const MODES = [
     { id: 'floating', label: '悬浮球', badge: '默认', description: '屏幕上常驻悬浮球，可自由拖动。桌面与手机分别记忆位置。', paths: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 8v8M8 12h8'] },
@@ -31,7 +32,7 @@ function icon(paths) {
     return svg;
 }
 
-export function mountToolkitSettingsPage(target, { entrySettings, themeSettings }) {
+export function mountToolkitSettingsPage(target, { entrySettings, themeSettings, setLeaveGuard }) {
     let disposed = false;
     let busy = false;
     let savedNotice = false;
@@ -41,6 +42,13 @@ export function mountToolkitSettingsPage(target, { entrySettings, themeSettings 
     // 主题是立即可见且易回退的纯外观选项：选择后立即应用并保存，不进入草稿。
     let themeSaved = themeSettings.getState().theme;
     let themeBusy = false;
+
+    // 入口方式是草稿（需点保存），主题是即时生效的；只有前者需要离开前确认。
+    setLeaveGuard?.(unsavedChangesGuard(target.ownerDocument, {
+        isDirty: () => draftMode !== saved.mode,
+        title: '有未保存的入口设置',
+        message: '已选择新的入口方式但尚未保存，继续离开不会写入。当前生效的入口保持原样。',
+    }));
 
     const labelFor = mode => MODES.find(item => item.id === mode).label;
     const themeLabelFor = theme => THEMES.find(item => item.id === theme)?.label ?? theme;

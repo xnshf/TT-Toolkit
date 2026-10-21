@@ -50,7 +50,7 @@ export function createEntryCards({ runtime, view, target, runNavigating }) {
         });
 
         // 迷你内联开关
-        const switchInput = h('input', { type: 'checkbox', checked: !isDisabled });
+        const switchInput = h('input', { type: 'checkbox', checked: !isDisabled, attrs: { 'aria-label': `启用条目 #${entry.uid}` } });
         switchInput.addEventListener('change', event => {
             event.stopPropagation();
             void runNavigating(async () => {

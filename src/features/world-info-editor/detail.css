@@ -403,7 +403,8 @@
   flex-direction: column;
   gap: 5px;
 }
-.wie-param-item label {
+/* 参数项是 <label>，标题为内部 <span>（span 让 label 内容仍是短语内容）。 */
+.wie-param-item > span {
   font-size: 12px;
   color: var(--ttk-muted);
 }

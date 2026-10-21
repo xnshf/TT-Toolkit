@@ -2,14 +2,16 @@ import { actionButton, callout, h, pagerBar } from '../../ui/dom.js';
 import { errorMessage } from '../../kernel/errors.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 import { confirmDanger } from '../../ui/confirm.js';
+import { unsavedChangesGuard } from '../../ui/leave-guard.js';
 import { createActionRunner } from '../../ui/run-action.js';
 
 const PAGE_SIZE = 20;
 const TABS = [['manual', '手动清洗'], ['rules', '规则设置'], ['auto', '自动清洗'], ['status', '运行状态']];
 
+// 用 <label> 包裹标题与控件：可点击标题聚焦控件，控件也能从标题获得可访问名称。
 function settingRow(title, description, control) {
-    return h('div', { className: 'setting-row' },
-        h('div', {}, h('strong', { text: title }), description ? h('small', { text: description }) : null),
+    return h('label', { className: 'setting-row' },
+        h('span', {}, h('strong', { text: title }), description ? h('small', { text: description }) : null),
         control,
     );
 }
@@ -57,6 +59,13 @@ export function mountChatCleanerPage(target, props) {
     };
     let disposed = false;
     const notices = createNoticeController(() => render());
+
+    // 规则草稿只在点“保存规则”时落盘；关闭工作台或切功能前必须问一次。
+    props.setLeaveGuard?.(unsavedChangesGuard(target.ownerDocument, {
+        isDirty: () => JSON.stringify(view.draft) !== JSON.stringify(runtime.state.settings),
+        title: '有未保存的清洗设置',
+        message: '规则或自动清洗的改动尚未保存，继续离开不会写入。已保存的设置、世界书和聊天都不受本次离开影响。',
+    }));
 
     const run = createActionRunner({
         notices,
@@ -211,11 +220,12 @@ export function mountChatCleanerPage(target, props) {
                 ),
             );
             group.rules.forEach((rule, index) => {
-                const ruleEnabled = h('input', { type: 'checkbox', checked: rule.enabled, title: '启用规则' });
+                const ruleName = groupName === 'assistant' ? 'AI 正文' : '用户正文';
+                const ruleEnabled = h('input', { type: 'checkbox', checked: rule.enabled, attrs: { 'aria-label': `启用第 ${index + 1} 条${ruleName}规则` } });
                 ruleEnabled.addEventListener('change', () => { rule.enabled = ruleEnabled.checked; });
-                const start = h('input', { value: rule.start, placeholder: '开始标记（可单独使用）' });
+                const start = h('input', { value: rule.start, placeholder: '开始标记（可单独使用）', attrs: { 'aria-label': `第 ${index + 1} 条${ruleName}规则的开始标记` } });
                 start.addEventListener('input', () => { rule.start = start.value; });
-                const end = h('input', { value: rule.end, placeholder: '结束标记（可单独使用）' });
+                const end = h('input', { value: rule.end, placeholder: '结束标记（可单独使用）', attrs: { 'aria-label': `第 ${index + 1} 条${ruleName}规则的结束标记` } });
                 end.addEventListener('input', () => { rule.end = end.value; });
                 const row = h('div', { className: 'rule-row' },
                     ruleEnabled, start, end,
@@ -225,15 +235,15 @@ export function mountChatCleanerPage(target, props) {
                             group.rules.splice(index - 1, 0, moved);
                             render();
                         }
-                    }),
+                    }, { ariaLabel: `上移第 ${index + 1} 条${ruleName}规则`, disabled: index === 0 }),
                     actionButton('↓', () => {
                         if (index + 1 < group.rules.length) {
                             const [moved] = group.rules.splice(index, 1);
                             group.rules.splice(index + 1, 0, moved);
                             render();
                         }
-                    }),
-                    actionButton('删除', () => { group.rules.splice(index, 1); render(); }),
+                    }, { ariaLabel: `下移第 ${index + 1} 条${ruleName}规则`, disabled: index + 1 >= group.rules.length }),
+                    actionButton('删除', () => { group.rules.splice(index, 1); render(); }, { ariaLabel: `删除第 ${index + 1} 条${ruleName}规则` }),
                 );
                 if (!rule.start || !rule.end)
                     row.append(h('small', { className: 'risk', text: '单边规则会删除到正文边界，请仔细预览。' }));

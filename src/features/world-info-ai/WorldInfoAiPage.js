@@ -2,6 +2,7 @@ import { actionButton, callout, h } from '../../ui/dom.js';
 import { searchField } from '../../ui/search-field.js';
 import { captureFocus, restoreFocus } from '../../ui/focus-keep.js';
 import { confirmDanger } from '../../ui/confirm.js';
+import { unsavedChangesGuard } from '../../ui/leave-guard.js';
 import {
     detectPromptTemplateEntry, isAiModeEligible, parseConfigExchange,
     parseWorldInfoAiConfig, parseWorldInfoAiFeatureSettings, worldInfoTriggerType,
@@ -47,6 +48,13 @@ export function mountWorldInfoAiPage(target, props) {
         error ? h('small', { className: 'world-ai-field-error', text: error, attrs: { role: 'alert' } }) : null);
     const control = (tag, key, properties = {}) => h(tag, { ...properties, dataset: { control: key } });
     const notice = (message, kind = '') => { view.notice = message; view.noticeKind = kind; };
+
+    // 条目配置与全局设置各有一个保存按钮；任一未保存就在离开前问一次。
+    props.setLeaveGuard?.(unsavedChangesGuard(target.ownerDocument, {
+        isDirty: () => dirty() || settingsDirty(),
+        title: '有未保存的世界书配置',
+        message: '条目配置或全局设置的改动尚未保存，继续离开不会写入。已保存的配置不受影响。',
+    }));
 
     function loadDraft() {
         const state = runtime.state;

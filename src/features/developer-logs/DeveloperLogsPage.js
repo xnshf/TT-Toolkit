@@ -6,6 +6,7 @@ import { MIB } from '../../kernel/logging/schema.js';
 import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
 import { captureFocus, restoreFocus } from '../../ui/focus-keep.js';
+import { unsavedChangesGuard } from '../../ui/leave-guard.js';
 
 const PAGE_SIZE = 100;
 const LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -103,6 +104,13 @@ export function mountDeveloperLogsPage(target, props) {
     let disposed = false;
     let actionNoticeTimer = null;
     const notices = createNoticeController(() => render());
+
+    // 日志设置只有点“保存设置”才落盘；容量输入是独立的 MiB 数值，需要并回草稿再比较。
+    props.setLeaveGuard?.(unsavedChangesGuard(target.ownerDocument, {
+        isDirty: () => JSON.stringify({ ...view.draft, maxBytes: Math.round(view.maxMiB * MIB) }) !== JSON.stringify(runtime.state.settings),
+        title: '有未保存的日志设置',
+        message: '隐私模式、最低记录级别或容量上限的改动尚未保存，继续离开不会写入。已记录的日志不会被删除。',
+    }));
 
     function setActionNotice(notice) {
         if (actionNoticeTimer !== null)
@@ -239,11 +247,11 @@ export function mountDeveloperLogsPage(target, props) {
             option('full', '完整（不脱敏）', view.draft.privacyMode === 'full'),
         );
         privacy.addEventListener('change', () => { view.draft.privacyMode = privacy.value; render(); });
-        const minimum = h('select', {}, LEVELS.map(level => option(level, level, view.draft.minimumLevel === level)));
+        const minimum = h('select', { attrs: { 'aria-label': '最低记录级别' } }, LEVELS.map(level => option(level, level, view.draft.minimumLevel === level)));
         minimum.addEventListener('change', () => { view.draft.minimumLevel = minimum.value; });
-        const consoleLevel = h('select', {}, ['off', ...LEVELS].map(level => option(level, level, view.draft.consoleLevel === level)));
+        const consoleLevel = h('select', { attrs: { 'aria-label': 'console 同步级别' } }, ['off', ...LEVELS].map(level => option(level, level, view.draft.consoleLevel === level)));
         consoleLevel.addEventListener('change', () => { view.draft.consoleLevel = consoleLevel.value; });
-        const max = h('input', { type: 'number', min: 1, max: 200, step: 1, value: view.maxMiB });
+        const max = h('input', { type: 'number', min: 1, max: 200, step: 1, value: view.maxMiB, attrs: { 'aria-label': '容量上限（MiB）' } });
         max.addEventListener('input', () => { view.maxMiB = Number(max.value); });
         return h('div', { className: 'log-settings-grid' },
             h('label', {}, '隐私模式', privacy),
@@ -254,12 +262,12 @@ export function mountDeveloperLogsPage(target, props) {
     }
 
     function toolbar() {
-        const features = h('select', { dataset: { control: 'feature-filter' } },
+        const features = h('select', { dataset: { control: 'feature-filter' }, attrs: { 'aria-label': '按功能筛选日志' } },
             option('', '全部功能', !view.featureFilter),
             featureCatalog.map(feature => option(feature.id, feature.label, view.featureFilter === feature.id)),
         );
         features.addEventListener('change', () => { view.featureFilter = features.value; view.page = 0; render(); });
-        const sessions = h('select', { dataset: { control: 'session-filter' } }, option('', '全部会话', !view.selectedSession), runtime.state.sessions.map(session => option(
+        const sessions = h('select', { dataset: { control: 'session-filter' }, attrs: { 'aria-label': '选择日志会话' } }, option('', '全部会话', !view.selectedSession), runtime.state.sessions.map(session => option(
             session.id,
             `${session.startedAt} · ${session.privacyMode}${session.interrupted ? ' · 中断' : ''}`,
             view.selectedSession === session.id,
@@ -269,11 +277,12 @@ export function mountDeveloperLogsPage(target, props) {
             void run(reloadSession);
         });
         const sources = [...new Set(entries().map(({ event }) => event.source))].sort();
-        const source = h('select', { dataset: { control: 'source-filter' } }, option('', '全部来源', !view.sourceFilter), sources.map(value => option(value, value, view.sourceFilter === value)));
+        const source = h('select', { dataset: { control: 'source-filter' }, attrs: { 'aria-label': '按来源筛选日志' } }, option('', '全部来源', !view.sourceFilter), sources.map(value => option(value, value, view.sourceFilter === value)));
         source.addEventListener('change', () => { view.sourceFilter = source.value; view.page = 0; render(); });
         const search = searchField({
             value: view.search,
             placeholder: '搜索事件或数据',
+            ariaLabel: '搜索日志事件或数据',
             dataset: { control: 'search' },
             onQuery: value => {
                 view.search = value;

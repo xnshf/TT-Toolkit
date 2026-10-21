@@ -9,7 +9,8 @@ export function createTagEditor({ runtime, tagRefs, scheduleScroll }) {
         const input = h('input', {
             type: 'text',
             className: 'wie-tag-input',
-            placeholder: tags.length === 0 ? '键入词按回车或逗号添加...' : '+ 添加...',
+            placeholder: tags.length === 0 ? '键入词按回车或逗号添加…' : '+ 添加…',
+            attrs: { 'aria-label': isSecondary ? '添加二级过滤词' : '添加主要触发词' },
         });
         const ref = { refresh: null };
 
@@ -38,7 +39,7 @@ export function createTagEditor({ runtime, tagRefs, scheduleScroll }) {
         };
 
         ref.render = () => {
-            input.placeholder = ref.tags.length === 0 ? '键入词按回车或逗号添加...' : '+ 添加...';
+            input.placeholder = ref.tags.length === 0 ? '键入词按回车或逗号添加…' : '+ 添加…';
             tagList.replaceChildren(...ref.tags.map((tag, idx) => {
                 const isReg = isRegexKey(tag);
                 const tagEl = h('span', { className: `wie-tag${isSecondary ? ' secondary' : ''}${isReg ? ' regex' : ''}` },

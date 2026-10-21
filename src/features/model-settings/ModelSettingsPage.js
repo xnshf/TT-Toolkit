@@ -1,5 +1,6 @@
 import { actionButton, callout, h } from '../../ui/dom.js';
 import { createActionRunner } from '../../ui/run-action.js';
+import { unsavedChangesGuard } from '../../ui/leave-guard.js';
 
 function input(value, onInput, options = {}) {
     const element = h('input', { value, ...options });
@@ -20,6 +21,13 @@ export function mountModelSettingsPage(target, props) {
         confirmingReset: false,
     };
     let disposed = false;
+
+    // 预设（含访问密钥）只在点“保存模型预设”时落盘；密钥不会被插件保存副本，丢了无法恢复。
+    props.setLeaveGuard?.(unsavedChangesGuard(target.ownerDocument, {
+        isDirty: () => JSON.stringify(view.draft) !== JSON.stringify(runtime.state.settings),
+        title: '有未保存的模型预设',
+        message: '预设、地址、模型名或访问密钥的改动尚未保存，继续离开不会写入。已保存的预设不受影响。',
+    }));
 
     const run = createActionRunner({
         notice: {

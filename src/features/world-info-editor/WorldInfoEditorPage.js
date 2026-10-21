@@ -83,6 +83,18 @@ export function mountWorldInfoEditorPage(target, props) {
     };
 
     target.classList.add('wie-host');
+    // 条目是自动保存的：离开前先尝试把草稿落盘，只有写不进去时才让用户决定是否放弃。
+    props.setLeaveGuard?.(async () => {
+        if (!runtime.state.dirty && runtime.state.saveStatus !== 'error')
+            return true;
+        if (await saveManually())
+            return true;
+        return confirmDanger(target.ownerDocument, {
+            title: '草稿未能保存',
+            message: '这条草稿没有写入世界书，继续离开不会保存它。世界书不会被本次离开改动。',
+            confirmLabel: '不保存，继续离开',
+        });
+    });
     const unsubscribe = runtime.subscribe(() => {
         if (disposed) return;
         if (isTyping()) {
@@ -193,7 +205,7 @@ export function mountWorldInfoEditorPage(target, props) {
 
     function renderTopBar() {
         const state = runtime.state;
-        const select = h('select', { className: 'wie-select' });
+        const select = h('select', { className: 'wie-select', attrs: { 'aria-label': '选择世界书' } });
 
         for (const name of state.worldNames) {
             const binding = state.activeBindings.find(b => b.name === name);
@@ -251,7 +263,8 @@ export function mountWorldInfoEditorPage(target, props) {
         const searchInput = h('input', {
             type: 'text',
             value: state.searchQuery,
-            placeholder: '搜索标题、关键词或正文...',
+            placeholder: '搜索标题、关键词或正文…',
+            attrs: { 'aria-label': '搜索世界书条目' },
         });
         searchInput.addEventListener('input', () => {
             runtime.setSearchQuery(searchInput.value);
@@ -289,7 +302,7 @@ export function mountWorldInfoEditorPage(target, props) {
 
         return h('div', { className: 'wie-list-header' },
             h('div', { className: 'wie-search-box' },
-                h('span', { className: 'wie-search-icon', text: '🔍' }),
+                h('span', { className: 'wie-search-icon', text: '🔍', attrs: { 'aria-hidden': 'true' } }),
                 searchInput,
                 clearBtn,
             ),
