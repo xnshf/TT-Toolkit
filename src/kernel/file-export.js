@@ -5,18 +5,12 @@ export function fileExportErrorKind(error) {
     return ERROR_NAMES.has(error?.name) ? error.name : 'Error';
 }
 
-// Only verified host outcomes are accepted; browser downloads cannot confirm disk writes.
+// download(..., { throwOnFailure: true }) returns delivery/cancellation, not platform paths.
 export function fileExportResult(result) {
-    if (result?.mode === 'browser' && result.savedPath === '')
-        return { status: 'started', mode: result.mode, message: '已发起下载，请查看系统默认下载位置。' };
-    if (result?.mode === 'mobile-native' && typeof result.savedPath === 'string' && result.savedPath.trim())
-        return { status: 'saved', mode: result.mode, message: '导出成功，文件已保存到系统公共下载目录。' };
-    if (result?.mode === 'android-document-picker' && typeof result.uri === 'string' && result.uri.trim())
-        return { status: 'saved', mode: result.mode, message: '导出成功，文件已保存到所选位置。' };
-    if (result?.mode === 'ios-native-share' && typeof result.completed === 'boolean')
-        return result.completed
-            ? { status: 'saved', mode: result.mode, message: '导出成功，已完成系统分享操作。' }
-            : { status: 'cancelled', mode: result.mode, message: '已取消导出。' };
+    if (typeof result?.delivered === 'boolean')
+        return result.delivered
+            ? { status: 'saved', mode: 'host-download', message: '导出成功，宿主已完成文件导出。' }
+            : { status: 'cancelled', mode: 'host-download', message: '已取消导出。' };
     throw new ToolkitError('FILE_EXPORT_RESULT_INVALID', '宿主导出结果无法确认，请检查目标位置后再重试，避免重复导出。', {
         stage: 'export.result', reason: 'host-export-result-invalid',
     });

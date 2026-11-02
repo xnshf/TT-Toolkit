@@ -70,55 +70,18 @@ export const entryMethods = {
         catch {
             throw new ToolkitError('FILE_EXPORT_UNAVAILABLE', '宿主文件导出模块不可用，请检查宿主版本并重试。');
         }
-        if (typeof this.fileExportModule?.downloadBlobWithRuntime !== 'function')
-            throw new ToolkitError('FILE_EXPORT_UNAVAILABLE', '宿主缺少文件导出函数，请检查宿主版本。');
+        if (typeof this.fileExportModule?.download !== 'function')
+            throw new ToolkitError('FILE_EXPORT_UNAVAILABLE', '宿主未提供前端 download() 接口，当前导出已停止。请检查宿主构建后重试。');
         try {
-            // Construct the Blob in the host realm, not the workbench iframe realm.
-            result = await this.fileExportModule.downloadBlobWithRuntime(new Blob([content], { type: mimeType }), filename);
+            // Let the retained frontend interface own platform delivery and notifications.
+            result = await this.fileExportModule.download(content, filename, mimeType, { throwOnFailure: true });
         }
         catch (error) {
-            // This exact cancellation is emitted by the verified Android SAF bridge.
-            if (error?.message === 'Export destination selection cancelled') {
-                const cancelled = { status: 'cancelled', mode: 'android-document-picker', message: '已取消导出。' };
-                this.notifyFileExport(cancelled);
-                return cancelled;
-            }
             const aborted = error?.name === 'AbortError';
             throw new ToolkitError(aborted ? 'FILE_EXPORT_ABORTED' : 'FILE_EXPORT_FAILED', aborted
                 ? '宿主导出已中止，无法确认是否为主动取消。请检查目标位置后重试。'
                 : '宿主文件导出失败，未确认文件保存。请检查目标位置后重试。', { kind: fileExportErrorKind(error) });
         }
-        const outcome = fileExportResult(result);
-        this.notifyFileExport(outcome);
-        return outcome;
-    },
-    notifyFileExport(outcome) {
-        const method = outcome.status === 'saved' ? 'success' : 'info';
-        if (typeof window.toastr?.[method] !== 'function')
-            return;
-        try {
-            const overlay = document.getElementById('tt-toolkit-overlay');
-            const target = overlay && overlay.style.display !== 'none' ? overlay : document.body;
-            const container = document.getElementById('tt-toolkit-export-toast');
-            if (container && container.parentElement !== target)
-                target.append(container);
-            window.toastr[method](outcome.message, 'TT-Toolkit 文件导出', {
-                target: target.id === 'tt-toolkit-overlay' ? '#tt-toolkit-overlay' : 'body',
-                containerId: 'tt-toolkit-export-toast',
-                positionClass: 'toast-top-center',
-                escapeHtml: true,
-                debug: false,
-                timeOut: 4500,
-                // Do not run the host's default callback that relocates its own toast container.
-                onHidden: () => {},
-            });
-        }
-        catch (error) {
-            this.log?.warn('export.notification_failed', { data: {
-                operation: 'export.notify', stage: 'export.notification', reason: 'host-toast-rejected',
-                kind: fileExportErrorKind(error), sourceLocation: 'kernel/host.js:notifyFileExport',
-                outcome: 'page-feedback-only', nextAction: 'read-page-feedback',
-            } });
-        }
+        return fileExportResult(result);
     }
 };
