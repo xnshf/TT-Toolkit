@@ -83,6 +83,8 @@ export function describeIdentifier(identifier, promptName = null) {
         return { source: 'world-info', label: '世界书（深度注入）' };
     if (text.startsWith('customWIOutlet'))
         return { source: 'world-info', label: '世界书（outlet）' };
+    if (text.startsWith('worldInfoImage'))
+        return { source: 'world-info', label: presetName ?? '世界书（图片）' };
     if (presetName)
         return { source: 'preset', label: presetName };
     return { source: 'unknown', label: text || '未命名条目' };
@@ -93,6 +95,24 @@ export function stringifyContent(content) {
         return content;
     if (content === null || content === undefined)
         return '';
+    if (Array.isArray(content) && content.some(part => part && typeof part === 'object' && part.type === 'image_url' && typeof part.image_url?.url === 'string' && part.image_url.url.startsWith('data:'))) {
+        return content.map(part => {
+            if (!part || typeof part !== 'object')
+                return String(part ?? '');
+            if (part.type === 'text' && typeof part.text === 'string')
+                return part.text;
+            if (part.type === 'image_url' && typeof part.image_url?.url === 'string') {
+                const mime = part.image_url.url.split(';')[0]?.split(':')[1] ?? 'image';
+                return `[图片附件: ${mime}]`;
+            }
+            try {
+                return JSON.stringify(part);
+            }
+            catch {
+                return String(part);
+            }
+        }).filter(Boolean).join('\n');
+    }
     try {
         return JSON.stringify(content);
     }

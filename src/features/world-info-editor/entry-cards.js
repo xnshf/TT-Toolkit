@@ -86,6 +86,12 @@ export function createEntryCards({ runtime, view, target, runNavigating }) {
 
         // 底部徽章
         const badges = h('div', { className: 'wie-badges' });
+        if (entry.hasImage) {
+            badges.append(h('span', { className: 'wie-badge wie-badge-image', text: '图片' }));
+        }
+        else if (entry.imageInvalid) {
+            badges.append(h('span', { className: 'wie-badge wie-badge-disabled', text: '图片异常' }));
+        }
         if (entry.constant) {
             badges.append(h('span', { className: 'wie-badge wie-badge-constant', text: '常驻' }));
         }

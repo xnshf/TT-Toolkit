@@ -125,6 +125,7 @@ export function replaceUserPlaceholder(text) {
 
 /**
  * 递归转换整个条目内的所有字符串字段，返回新条目与总替换处数。
+ * 跳过 extensions 结构字段，避免破坏插件或第三方扩展的结构化标识（如图片 blobKey）。
  */
 export function convertEntryUserPlaceholders(entry) {
     let count = 0;
@@ -139,7 +140,7 @@ export function convertEntryUserPlaceholders(entry) {
         if (value && typeof value === 'object') {
             const next = {};
             for (const [key, item] of Object.entries(value))
-                next[key] = walk(item);
+                next[key] = key === 'extensions' ? structuredClone(item) : walk(item);
             return next;
         }
         return value;

@@ -4,12 +4,12 @@ import {
     convertEntryUserPlaceholders,
     createDefaultWorldInfoEditorSettings,
     createNewEntry,
-    estimateTokens,
     getFreeWorldEntryUid,
     isEditorEntry,
-    normalizeEntry,
     parseWorldInfoEditorSettings,
 } from './schema.js';
+import { filterEntries, statsForEntries, summarizeEntries } from './entry-list.js';
+import { readEntryImageBindingSafe } from '../world-info-images/schema.js';
 
 const AUTOSAVE_DEBOUNCE_MS = 1000;
 const SETTINGS_KEY = 'world-info-editor-settings-v1';
@@ -340,13 +340,18 @@ export class WorldInfoEditorRuntime {
         const revision = this.revision;
         const original = this.baseline?.entries?.[uid];
         const draft = structuredClone(this.state.currentDraft);
-        const changes = Object.keys(draft).filter(key => !sameJsonValue(draft[key], original?.[key]));
+        const allKeys = new Set([...Object.keys(draft), ...Object.keys(original ?? {})]);
+        const changes = [...allKeys].filter(key => !sameJsonValue(draft[key], original?.[key]));
         await this.commit(next => {
             // 整本快照已比对过；这里只防止状态错配导致的 TypeError，不再重复判定冲突。
             if (!Object.hasOwn(next.entries, uid))
                 throw new ToolkitError('WORLD_INFO_ENTRY_MISSING', '条目已不存在，已保留草稿。');
-            for (const key of changes)
-                next.entries[uid][key] = structuredClone(draft[key]);
+            for (const key of changes) {
+                if (draft[key] === undefined)
+                    delete next.entries[uid][key];
+                else
+                    next.entries[uid][key] = structuredClone(draft[key]);
+            }
         }, { isAuto });
         if (this.revision === revision) {
             this.state.dirty = false;
@@ -422,54 +427,27 @@ export class WorldInfoEditorRuntime {
     setSort(sort) { this.state.sort = sort; this.notify(); }
 
     getFilteredEntries() {
-        const needle = this.state.searchQuery.trim().toLowerCase();
-        return this.entrySummaries().filter(item => {
-            if (needle && ![item.comment, String(item.uid), item.content, ...item.key, ...item.keysecondary]
-                .some(value => String(value).toLowerCase().includes(needle))) return false;
-            switch (this.state.filter) {
-                case 'constant': return item.constant;
-                case 'active': return !item.disable;
-                case 'disabled': return item.disable;
-                case 'depth': return item.position === 4;
-                default: return true;
-            }
-        }).sort((a, b) => {
-            switch (this.state.sort) {
-                case 'uid': return a.uid - b.uid;
-                case 'title': return a.comment.localeCompare(b.comment, 'zh-CN');
-                case 'tokens': return estimateTokens(b.content) - estimateTokens(a.content);
-                default: return a.order - b.order;
-            }
+        return filterEntries(this.entrySummaries(), {
+            query: this.state.searchQuery,
+            filter: this.state.filter,
+            sort: this.state.sort,
         });
     }
 
-    // 单个条目结构异常只降级该条目：整本世界书仍要可浏览，并且能在界面里删掉坏条目。
     entrySummaries() {
-        const items = [];
-        for (const [key, entry] of Object.entries(this.state.worldData?.entries ?? {})) {
-            const uid = Number.isFinite(Number(key)) ? Number(key) : key;
-            try {
-                items.push({ ...normalizeEntry(entry, typeof uid === 'number' ? uid : 0), broken: false });
-            }
-            catch {
-                items.push({
-                    uid, comment: '(结构异常的条目)', content: '', key: [], keysecondary: [],
-                    constant: false, disable: false, position: null, depth: 0, order: 0,
-                    selective: false, broken: true,
-                });
-            }
-        }
-        return items;
+        const items = summarizeEntries(this.state.worldData?.entries);
+        // 当前选中条目以草稿为准：刚绑定的图片在保存前也应显示徽章。
+        const draft = this.state.currentDraft;
+        if (!draft)
+            return items;
+        const { binding, invalid } = readEntryImageBindingSafe(draft);
+        return items.map(item => (String(item.uid) === String(draft.uid)
+            ? { ...item, hasImage: Boolean(binding), imageInvalid: invalid, imageBinding: binding }
+            : item));
     }
 
     getStats() {
-        const entries = Object.values(this.state.worldData?.entries ?? {});
-        return {
-            total: entries.length,
-            constant: entries.filter(entry => entry.constant).length,
-            active: entries.filter(entry => !entry.disable).length,
-            disabled: entries.filter(entry => entry.disable).length,
-            totalTokens: entries.reduce((total, entry) => total + estimateTokens(entry.content), 0),
-        };
+        return statsForEntries(this.state.worldData?.entries);
     }
 }
+

@@ -223,7 +223,7 @@ export class PromptViewerRuntime {
     }
 
     async createSnapshot({ kind, generationType, worldEntries }) {
-        const raw = await this.host.readPromptViewerSnapshot();
+        const raw = await this.host.readPromptViewerSnapshot({ dryRun: kind === 'prediction' });
         const projectedWorldEntries = projectWorldEntries(worldEntries);
         const items = attachWorldEntryRefs(buildPromptItemView(raw.messages), projectedWorldEntries);
         const info = this.mutable.info;

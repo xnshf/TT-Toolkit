@@ -15,7 +15,7 @@
 .world-ai-page [aria-invalid=true] { border-color: var(--ttk-danger); }
 .world-ai-field-error { color: var(--ttk-text); background: var(--ttk-danger-soft); border-left: 3px solid var(--ttk-danger); padding: 6px; }
 .world-ai-help,.world-ai-entry small,.world-ai-active-card small { color: var(--ttk-muted); font-size: 13px; }
-.world-ai-savebar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px; margin-block: 8px 14px; border: 1px solid var(--ttk-border-strong); border-radius: var(--ttk-radius-sm); background: var(--ttk-raised); }
+.world-ai-savebar { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; margin-block: 8px 14px; border: 1px solid var(--ttk-border-strong); border-radius: var(--ttk-radius-md); background: color-mix(in srgb, var(--ttk-raised) 94%, transparent); backdrop-filter: blur(8px); box-shadow: var(--ttk-shadow-sm); }
 .world-ai-savebar > span { color: var(--ttk-muted); font-size: 13px; flex: 1 1 130px; }
 .world-ai-entry-heading { align-items: start; justify-content: space-between; margin-top: 0; }
 .world-ai-entry-select { flex: 1 1 180px; min-width: 0; }

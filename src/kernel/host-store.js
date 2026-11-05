@@ -37,6 +37,9 @@ export const storeMethods = {
     async storeDeleteTable(table) {
         await this.abi.api.extension.store.deleteTable({ namespace: this.namespace, table });
     },
+    async storeListBlobKeys(table) {
+        return this.abi.api.extension.store.listBlobKeys({ namespace: this.namespace, table });
+    },
     async getHostConsoleCaptureEnabled() {
         const frontendLogs = this.assertFrontendLogsCapability();
         let enabled;

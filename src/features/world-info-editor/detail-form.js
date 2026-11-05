@@ -65,7 +65,7 @@ function paramItem(caption, control) {
 }
 
 // 右侧详情表单：按条目字段分组拆成四个区块，每个区块只依赖自己的控件与 runtime。
-export function createDetailForm({ runtime, view, render, saveManually, scheduleScroll, renderTagEditor }) {
+export function createDetailForm({ runtime, view, render, saveManually, scheduleScroll, renderTagEditor, run }) {
     const bind = (field, options) => input => {
         bindNumberInput(runtime, input, field, options);
         return input;
@@ -189,7 +189,7 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
         );
     }
 
-    // 模块 3: 注入时机与位置
+    // 模块 4: 注入时机与位置
     function timingSection(draft) {
         const posSelect = h('select', { className: 'wie-input-text' });
         for (const p of POSITION_OPTIONS) {
@@ -231,7 +231,7 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
         );
     }
 
-    // 模块 4: 高级控制手风琴
+    // 模块 5: 高级控制手风琴
     function advancedSection(draft) {
         const accordionBtn = h('button', { type: 'button', className: 'wie-accordion-btn' },
             h('span', { text: '⚙️ 高级触发与递归机制 (防递归、动态时机、互斥分组)' }),

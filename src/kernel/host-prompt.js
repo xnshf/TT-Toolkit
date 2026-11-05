@@ -162,7 +162,7 @@ export const promptMethods = {
             reasoningContent: message?.reasoningContent ? String(message.reasoningContent) : null,
         };
     },
-    async readPromptViewerSnapshot() {
+    async readPromptViewerSnapshot({ dryRun = false } = {}) {
         const promptManager = await this.openAiPromptManager();
         const collection = promptManager?.messages;
         if (!collection || typeof collection.flatten !== 'function') {
@@ -187,9 +187,18 @@ export const promptMethods = {
         };
         const projected = collection.flatten().map(message => this.projectPromptViewerMessage(message, promptName));
         const messages = projected.filter(message => !PROMPT_VIEWER_AGENT_ONLY_IDENTIFIERS.has(message.identifier));
+        const injected = this.consumeWorldInfoInjectedPromptMessages?.({ dryRun }) ?? [];
+        if (injected.length) {
+            for (const item of injected) {
+                const index = Number.isInteger(item.insertIndex) && item.insertIndex >= 0 && item.insertIndex <= messages.length
+                    ? item.insertIndex
+                    : messages.length;
+                messages.splice(index, 0, this.projectPromptViewerMessage(item, () => item.promptName ?? null));
+            }
+        }
         return {
             messages,
-            removedAgentItemCount: projected.length - messages.length,
+            removedAgentItemCount: projected.length - (messages.length - injected.length),
             squashSystemMessages: Boolean(promptManager.serviceSettings?.squash_system_messages),
         };
     },
@@ -271,5 +280,57 @@ export const promptMethods = {
             for (const dispose of disposers.splice(0))
                 dispose();
         };
+    },
+    async buildWorldInfoImageMessage({ text = '', images = [], identifier = 'worldInfoImage' } = {}) {
+        if (!Array.isArray(images) || images.length === 0)
+            return null;
+        this.openAiModule ??= await (this.dynamicImport ?? dynamicImport)(OPENAI_URL);
+        const Message = this.openAiModule?.Message;
+        const MessageCollection = this.openAiModule?.MessageCollection;
+        if (typeof Message?.createAsync !== 'function' || typeof MessageCollection !== 'function') {
+            throw new ToolkitError('HOST_EXPORT_MISSING', 'TauriTavern 缺少 openai.js 的 Message / MessageCollection 导出。');
+        }
+        const message = await Message.createAsync('user', String(text ?? ''), String(identifier));
+        if (typeof message?.addImage !== 'function')
+            throw new ToolkitError('HOST_EXPORT_MISSING', 'TauriTavern Message 缺少 addImage 方法。');
+        let attachedCount = 0;
+        for (const dataUrl of images) {
+            if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/'))
+                continue;
+            const before = Array.isArray(message.content) ? message.content.length : 0;
+            await message.addImage(dataUrl);
+            const after = Array.isArray(message.content) ? message.content.length : 0;
+            if (after > before && message.content[after - 1]?.type === 'image_url')
+                attachedCount += 1;
+        }
+        if (attachedCount === 0)
+            return null;
+        const collection = new MessageCollection(String(identifier), message);
+        const chat = collection.getChat();
+        const chatMessage = Array.isArray(chat) ? chat[0] : null;
+        if (!chatMessage)
+            return null;
+        return {
+            chatMessage,
+            tokens: typeof message.getTokens === 'function' ? Number(message.getTokens()) : Number(message.tokens ?? 0),
+            attachedCount,
+        };
+    },
+    recordWorldInfoInjectedPromptMessages(messages, { dryRun = false } = {}) {
+        const items = Array.isArray(messages) ? structuredClone(messages) : [];
+        if (dryRun)
+            this.lastDryRunInjectedWorldInfoImages = items;
+        else
+            this.lastSentInjectedWorldInfoImages = items;
+    },
+    consumeWorldInfoInjectedPromptMessages({ dryRun = false } = {}) {
+        if (dryRun) {
+            const items = this.lastDryRunInjectedWorldInfoImages ?? [];
+            this.lastDryRunInjectedWorldInfoImages = [];
+            return items;
+        }
+        const items = this.lastSentInjectedWorldInfoImages ?? [];
+        this.lastSentInjectedWorldInfoImages = [];
+        return items;
     }
 };

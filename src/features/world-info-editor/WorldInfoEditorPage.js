@@ -110,7 +110,7 @@ export function mountWorldInfoEditorPage(target, props) {
         runtime, view, target, render: () => render(), runNavigating, saveManually: () => saveManually(),
     });
     const renderDetailForm = createDetailForm({
-        runtime, view, render: () => render(), saveManually: () => saveManually(), scheduleScroll, renderTagEditor,
+        runtime, view, render: () => render(), saveManually: () => saveManually(), scheduleScroll, renderTagEditor, run,
     });
 
     function syncLiveStatus() {
@@ -225,6 +225,8 @@ export function mountWorldInfoEditorPage(target, props) {
             h('span', { text: '·' }),
             h('span', {}, h('b', { text: String(stats.constant) }), ' 常驻'),
             h('span', { text: '·' }),
+            h('span', {}, h('b', { text: String(stats.imageCount) }), ' 图片'),
+            h('span', { text: '·' }),
             h('span', {}, '预估 ', h('b', { text: String(stats.totalTokens) }), ' Token'),
         );
 
@@ -296,6 +298,7 @@ export function mountWorldInfoEditorPage(target, props) {
             ['active', '已启用'],
             ['disabled', '已禁用'],
             ['depth', '@深度'],
+            ['image', '含图片'],
         ].map(([key, label]) => actionButton(label, () => {
             runtime.setFilter(key);
         }, { className: `wie-chip${state.filter === key ? ' active' : ''}` }));

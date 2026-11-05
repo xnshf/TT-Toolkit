@@ -72,6 +72,15 @@ export const featureDefinitions = [{
         defaultEnabled: true,
         load: async (context) => (await import('./world-info-editor/index.js')).createWorldInfoEditorFeature(context),
     }, {
+        id: 'world-info-images',
+        category: { id: 'world-info', label: '世界书', order: 30 },
+        label: '插入图片',
+        description: '为世界书条目绑定图片和描述，随条目激活发送。',
+        icon: '🖼️',
+        order: 7,
+        defaultEnabled: true,
+        load: async (context) => (await import('./world-info-images/index.js')).createWorldInfoImagesFeature(context),
+    }, {
         id: 'world-info-ai',
         category: { id: 'world-info', label: '世界书', order: 30 },
         label: '决策激活',
