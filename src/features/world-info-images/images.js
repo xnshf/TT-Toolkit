@@ -6,8 +6,11 @@ import {
     parseEntryImageBinding,
     readEntryImageBinding,
 } from './schema.js';
+import { compressImageBytes } from './compress.js';
 
 const SUPPORTED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
+// 新导入只接受可压缩的静态格式：GIF 会被宿主或服务端转成静帧，且动画无法降采样，直接拒绝。
+const IMPORTABLE_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 export function detectImageMimeFromBytes(bytes) {
     const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -63,22 +66,40 @@ export async function prepareImageBlobBinding(blob) {
     const bytes = new Uint8Array(await blob.arrayBuffer());
     if (bytes.byteLength === 0)
         throw new ToolkitError('WORLD_INFO_IMAGE_EMPTY', '图片文件为空。');
-    const mimeType = detectImageMimeFromBytes(bytes);
-    if (!mimeType || !Object.hasOwn(ALLOWED_IMAGE_MIME_TYPES, mimeType)) {
-        throw new ToolkitError('WORLD_INFO_IMAGE_UNSUPPORTED_MIME', '仅支持有效的 PNG、JPEG、WebP 或 GIF 图片。');
-    }
-    const digest = await sha256BytesHex(bytes);
+    const detectedMimeType = detectImageMimeFromBytes(bytes);
+    if (!detectedMimeType || !Object.hasOwn(ALLOWED_IMAGE_MIME_TYPES, detectedMimeType))
+        throw new ToolkitError('WORLD_INFO_IMAGE_UNSUPPORTED_MIME', '仅支持有效的 PNG、JPEG 或 WebP 图片。');
+    if (!IMPORTABLE_IMAGE_MIME_TYPES.has(detectedMimeType))
+        throw new ToolkitError('WORLD_INFO_IMAGE_UNSUPPORTED_MIME', '不支持 GIF：无法降采样动画，且会被转成静态帧。请改用 PNG、JPEG 或 WebP。');
+
+    // 压缩发生在内容寻址之前：blobKey 基于压缩后的字节，存储、预览和请求体共用同一份数据。
+    // 无法解码/编码（极旧环境或异常图片）时退回原始字节，不阻塞导入。
+    const compressed = await compressImageBytes(bytes, detectedMimeType);
+    const storedBytes = compressed?.bytes ?? bytes;
+    const mimeType = compressed?.mimeType && Object.hasOwn(ALLOWED_IMAGE_MIME_TYPES, compressed.mimeType)
+        ? compressed.mimeType
+        : detectedMimeType;
+    const digest = await sha256BytesHex(storedBytes);
     const ext = ALLOWED_IMAGE_MIME_TYPES[mimeType];
     const binding = parseEntryImageBinding({
         schemaVersion: 1,
         blobKey: `img-${digest}.${ext}`,
         mimeType,
-        sizeBytes: bytes.byteLength,
+        sizeBytes: storedBytes.byteLength,
     });
     return {
         binding,
-        blob: new Blob([bytes], { type: mimeType }),
-        dataUrl: `data:${mimeType};base64,${bytesToBase64(bytes)}`,
+        blob: new Blob([storedBytes], { type: mimeType }),
+        dataUrl: `data:${mimeType};base64,${bytesToBase64(storedBytes)}`,
+        compression: {
+            applied: Boolean(compressed),
+            originalBytes: bytes.byteLength,
+            originalMimeType: detectedMimeType,
+            width: compressed?.width ?? null,
+            height: compressed?.height ?? null,
+            sourceWidth: compressed?.sourceWidth ?? null,
+            sourceHeight: compressed?.sourceHeight ?? null,
+        },
     };
 }
 
@@ -258,27 +279,30 @@ export class WorldInfoImageRuntime {
     async saveImageBlob(blob) {
         const prepared = await prepareImageBlobBinding(blob);
         await this.host.storeSetBlob(WORLD_INFO_IMAGE_TABLE, prepared.binding.blobKey, prepared.blob);
-        this.log?.info('image.saved', {
-            data: {
-                operation: 'world_info_image.save',
-                mimeType: prepared.binding.mimeType,
-                sizeBytes: prepared.binding.sizeBytes,
-            },
-        });
+        this.log?.info('image.saved', { data: this.imageLogData('world_info_image.save', prepared) });
         return prepared;
     }
 
     async importImageFromUrl(rawUrl, fetchImpl) {
         const prepared = await fetchImageFromUrl(rawUrl, fetchImpl);
         await this.host.storeSetBlob(WORLD_INFO_IMAGE_TABLE, prepared.binding.blobKey, prepared.blob);
-        this.log?.info('image.imported_url', {
-            data: {
-                operation: 'world_info_image.import_url',
-                mimeType: prepared.binding.mimeType,
-                sizeBytes: prepared.binding.sizeBytes,
-            },
-        });
+        this.log?.info('image.imported_url', { data: this.imageLogData('world_info_image.import_url', prepared) });
         return prepared;
+    }
+
+    // 白名单字段：只记体积、格式和像素规模，不记图片字节、URL 或描述。
+    imageLogData(operation, prepared) {
+        const compression = prepared.compression ?? {};
+        return {
+            operation,
+            mimeType: prepared.binding.mimeType,
+            sizeBytes: prepared.binding.sizeBytes,
+            compressionApplied: compression.applied === true,
+            originalBytes: Number.isSafeInteger(compression.originalBytes) ? compression.originalBytes : undefined,
+            originalMimeType: typeof compression.originalMimeType === 'string' ? compression.originalMimeType : undefined,
+            width: compression.width ?? undefined,
+            height: compression.height ?? undefined,
+        };
     }
 
     async loadImageDataUrl(binding) {

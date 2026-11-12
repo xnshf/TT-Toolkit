@@ -238,7 +238,7 @@ export function mountWorldInfoImagesPage(target, props) {
 
         const { binding, invalid } = readEntryImageBindingSafe(draft);
         const fileInput = h('input', {
-            type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif',
+            type: 'file', accept: 'image/png,image/jpeg,image/webp',
             disabled: busy, className: 'wie-image-file', attrs: control('file'),
         });
         fileInput.addEventListener('change', () => {
@@ -280,7 +280,7 @@ export function mountWorldInfoImagesPage(target, props) {
                 h('div', { className: `wii-dropzone-empty${state.currentImageError || invalid ? ' is-error' : ''}`, on: { click: openFilePicker } },
                     h('span', { className: 'wii-dropzone-icon', text: state.currentImageError || invalid ? '⚠️' : '🖼️', attrs: { 'aria-hidden': 'true' } }),
                     h('span', { className: 'wie-image-empty', text: state.currentImageError || '尚未绑定图片 · 点击选择或拖放图片到此处' }),
-                    h('small', { className: 'wii-dropzone-sub', text: '支持 PNG / JPEG / WebP / GIF，也可直接按 Ctrl+V 粘贴剪贴板图片' }),
+                    h('small', { className: 'wii-dropzone-sub', text: '支持 PNG / JPEG / WebP，也可直接按 Ctrl+V 粘贴剪贴板图片；入库时自动压成 WebP（长边 ≤1568px）' }),
                 ),
                 h('div', { className: 'wie-image-actions wii-empty-actions' },
                     actionButton('选择本地图片', openFilePicker, { className: 'secondary', disabled: busy }),
