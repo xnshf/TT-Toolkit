@@ -1,0 +1,20 @@
+{
+  "name": "tt-toolkit",
+  "private": true,
+  "type": "module",
+  "author": "TT-Toolkit Contributors",
+  "scripts": {
+    "syntaxcheck": "node scripts/check-js.mjs",
+    "linecheck": "node scripts/check-lines.mjs",
+    "test": "vitest run --configLoader native",
+    "check": "npm run syntaxcheck && npm run linecheck && npm run test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "happy-dom": "^20.11.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

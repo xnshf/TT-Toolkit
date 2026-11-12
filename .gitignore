@@ -1,4 +1,4 @@
-# Ignore everything by default. Explicitly allow only the installable runtime.
+# Ignore everything by default. Explicitly allow only the tracked paths.
 *
 
 # Keep the allowlist itself under version control.
@@ -13,3 +13,16 @@
 # Runtime source loaded by the entry files.
 !src/
 !src/**
+
+# Development assets: tests, docs and the local verification toolchain.
+# Local-only assets (AGENTS.md, DEVELOPMENT.md, install-dev.ps1, .agents/,
+# .pi/, node_modules/) stay ignored on purpose.
+!tests/
+!tests/**
+!docs/
+!docs/**
+!scripts/
+!scripts/**
+!package.json
+!package-lock.json
+!vite.config.js
