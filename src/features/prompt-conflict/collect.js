@@ -1,5 +1,6 @@
+import { errorKind, errorMessage } from '../../kernel/errors.js';
 import { sha256Hex } from '../../kernel/hash.js';
-import { WORLD_INFO_LORE_LISTS } from '../../kernel/world-info.js';
+import { WORLD_INFO_LORE_LISTS, worldInfoSnapshotFailureData } from '../../kernel/world-info.js';
 import { detectPromptTemplateEntry } from './dynamic-template.js';
 import { createPresetSource, createWorldInfoSource, isAnalyzable, isConstantWorldInfoEntry } from './sources.js';
 
@@ -61,6 +62,28 @@ export async function collectSources(host, records) {
     await collectPresetSources(host, sources);
     await collectWorldInfoSources(host, records, sources);
     return sources;
+}
+
+export function invalidateSourceSnapshot(runtime) {
+    runtime.mutable.snapshot = null;
+    runtime.mutable.selectedSourceIds = new Set();
+    runtime.mutable.reportStale = Boolean(runtime.mutable.report);
+    runtime.mutable.status = '';
+}
+
+export function recordSnapshotReadFailure(runtime, error) {
+    runtime.mutable.error = errorMessage(error);
+    const sourceFailure = worldInfoSnapshotFailureData(error);
+    if (sourceFailure) {
+        invalidateSourceSnapshot(runtime);
+        runtime.log?.warn('snapshot.refresh_failed', { data: { operation: 'snapshot.refresh', ...sourceFailure,
+            outcome: 'detection-blocked' } });
+        return;
+    }
+    runtime.log?.error('snapshot.refresh_failed', {
+        data: { operation: 'snapshot.refresh', ...errorKind(error) },
+        sensitive: { error },
+    });
 }
 
 // 沿用上一轮的勾选：仍然可检测且此前被勾选的保持勾选，新出现的可检测来源默认勾选。

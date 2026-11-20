@@ -16,6 +16,7 @@ function createHost() {
         storeGetBlob: async (_table, key) => blobs.get(key),
         onHostEvent: (name, handler) => { handlers.set(name, handler); return () => handlers.delete(name); },
         buildWorldInfoImageMessage: vi.fn(async ({ text, images }) => ({ chatMessage: { role: 'user', content: [text, ...images] } })),
+        recordWorldInfoInjectedPromptMessages: vi.fn(),
         emit: (name, ...args) => handlers.get(name)?.(...args),
     };
 }

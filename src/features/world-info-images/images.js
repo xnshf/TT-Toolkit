@@ -214,8 +214,8 @@ export class WorldInfoImageRuntime {
     async activate() {
         if (this.active)
             return;
-        const add = (name, handler) => {
-            this.disposers.push(this.host.onHostEvent(name, handler));
+        const add = (name, handler, options) => {
+            this.disposers.push(this.host.onHostEvent(name, handler, options));
         };
         try {
             add('GENERATION_STARTED', (type, _options, dryRun) => {
@@ -249,7 +249,7 @@ export class WorldInfoImageRuntime {
                 if (Array.isArray(entries))
                     this.sentActivatedEntries = entries;
             });
-            add('CHAT_COMPLETION_PROMPT_READY', payload => this.onPromptReady(payload));
+            add('CHAT_COMPLETION_PROMPT_READY', payload => this.onPromptReady(payload), { first: true });
             for (const name of ['GENERATION_STOPPED', 'GENERATION_ENDED', 'CHAT_CHANGED']) {
                 add(name, () => {
                     this.generationType = null;
@@ -319,13 +319,10 @@ export class WorldInfoImageRuntime {
             return;
         const sourceEntries = dryRun ? this.dryRunActivatedEntries : this.sentActivatedEntries;
         const candidates = extractActivatedImageEntries(sourceEntries);
-        if (candidates.length === 0) {
-            this.host.recordWorldInfoInjectedPromptMessages?.([], { dryRun });
+        if (candidates.length === 0)
             return;
-        }
 
         const preparedMessages = [];
-        const viewerMessages = [];
         let skippedCount = 0;
 
         for (let index = 0; index < candidates.length; index++) {
@@ -378,11 +375,9 @@ export class WorldInfoImageRuntime {
                     skippedCount += 1;
                     continue;
                 }
-                preparedMessages.push(built.chatMessage);
-                viewerMessages.push({
+                preparedMessages.push({
+                    chatMessage: built.chatMessage,
                     identifier,
-                    role: built.chatMessage.role ?? 'user',
-                    content: built.chatMessage.content,
                     tokens: built.tokens,
                     promptName: `世界书图片（${title}）`,
                 });
@@ -402,17 +397,12 @@ export class WorldInfoImageRuntime {
             }
         }
 
-        if (preparedMessages.length === 0) {
-            this.host.recordWorldInfoInjectedPromptMessages?.([], { dryRun });
+        if (preparedMessages.length === 0)
             return;
-        }
 
         const insertIndex = findWorldInfoImageInsertIndex(payload.chat);
-        payload.chat.splice(insertIndex, 0, ...preparedMessages);
-        this.host.recordWorldInfoInjectedPromptMessages?.(
-            viewerMessages.map((msg, idx) => ({ ...msg, insertIndex: insertIndex + idx })),
-            { dryRun },
-        );
+        payload.chat.splice(insertIndex, 0, ...preparedMessages.map(item => item.chatMessage));
+        this.host.recordWorldInfoInjectedPromptMessages(payload.chat, preparedMessages);
 
         this.log?.info('image.injected', {
             data: {

@@ -1,7 +1,6 @@
-import { ToolkitError, errorMessage } from '../../kernel/errors.js';
+import { ToolkitError } from '../../kernel/errors.js';
 import { isRecord } from './schema.js';
 import { classifyMessage } from './plan.js';
-import { logCleanerFailure } from './diagnostics.js';
 function sameValue(a, b) {
     if (Object.is(a, b))
         return true;
@@ -105,29 +104,72 @@ function applyPlan(chat, plan) {
         }
     }
 }
-export async function commitOperation(host, plan, log) {
+export function assertGenerationIdle(host, superseded = false, saved = false) {
+    if (superseded || host.isGenerationInProgress()) {
+        throw saved
+            ? new ToolkitError('CLEANER_GENERATION_AFTER_SAVE', '聊天正文已保存；因宿主启动了生成，已停止剩余操作。请等待生成结束后重新预览。')
+            : new ToolkitError('CLEANER_GENERATION_ACTIVE', '宿主正在生成或已开启新一轮生成；本次没有保存，请在生成结束后再提交。');
+    }
+}
+function isCommitConflict(error) {
+    return error?.code === 'CHAT_CHANGED' || error?.code === 'COMMIT_CONFLICT';
+}
+function commitConflict(error, afterSave = false) {
+    const prefix = afterSave ? '宿主已返回正文保存成功，清洗进度未更新。' : '';
+    const reason = error.code === 'CHAT_CHANGED' ? '当前聊天已切换' : '清洗目标已改变';
+    return new ToolkitError(error.code, `${prefix}${reason}，请回到原聊天重新预览。`, { afterSave });
+}
+function refreshFailure(error) {
+    if (isCommitConflict(error))
+        return commitConflict(error, true);
+    const saved = '宿主已返回正文保存成功，清洗进度未更新。';
+    return new ToolkitError('CLEANER_REFRESH_FAILED', `${saved}聊天刷新未完成，请核对原聊天并重新预览。`);
+}
+export async function commitOperation(host, plan, log, checkWrite = saved => assertGenerationIdle(host, false, saved)) {
     const chatAlias = log ? host.chatAlias(plan.identity.stableId) : undefined;
     log?.debug('transaction.validating', { data: { chatAlias, changedMessages: plan.changes.length } });
+    checkWrite(false);
     await host.assertIdentity(plan.identity.stableId, plan.identity.ref);
     const chat = host.context.chat;
     validatePlan(chat, plan);
+    checkWrite(false);
+    // No await between the final checks, the canonical mutation, and save dispatch.
     applyPlan(chat, plan);
-    log?.debug('transaction.applied', { data: { chatAlias, changedMessages: plan.changes.length } });
     try {
-        await host.assertIdentity(plan.identity.stableId, plan.identity.ref);
         await host.saveCurrentChat();
-        await host.assertIdentity(plan.identity.stableId, plan.identity.ref);
-        await host.reloadCurrentChat();
-        log?.info('transaction.persisted', { data: { chatAlias, changedMessages: plan.changes.length }, sensitive: { chatIdentity: plan.identity } });
     }
     catch (error) {
+        if (isCommitConflict(error))
+            throw error instanceof ToolkitError ? error : commitConflict(error);
+        let recovery = 'skipped';
         try {
+            await host.assertIdentity(plan.identity.stableId, plan.identity.ref);
+            checkWrite(false);
+            recovery = 'failed';
             await host.reloadCurrentChat();
+            recovery = 'reloaded';
         }
-        catch { /* Report the original persistence failure. */ }
-        if (log)
-            logCleanerFailure(log, 'transaction.persistence_failed', 'cleaner.persist', new ToolkitError('SAVE_FAILED', '保存失败，已请求重载。'), 'chat-cleaner/transaction.js:commitOperation');
-        throw new ToolkitError('SAVE_FAILED', `聊天保存失败，已请求重新载入权威数据：${errorMessage(error)}`);
+        catch { /* The original save failed; never retry the recovery reload. */ }
+        const detail = {
+            skipped: '未尝试重载，请核对原聊天后重新预览',
+            failed: '恢复重载也失败，请核对原聊天后重新预览',
+            reloaded: '已重新载入原聊天，请重新预览',
+        }[recovery];
+        throw new ToolkitError('SAVE_FAILED', `聊天保存失败：${detail}。`, { recovery });
     }
+    try {
+        await host.assertIdentity(plan.identity.stableId, plan.identity.ref);
+    }
+    catch (error) {
+        throw refreshFailure(error);
+    }
+    checkWrite(true);
+    try {
+        await host.reloadCurrentChat();
+    }
+    catch (error) {
+        throw refreshFailure(error);
+    }
+    log?.info('transaction.persisted', { data: { chatAlias, changedMessages: plan.changes.length }, sensitive: { chatIdentity: plan.identity } });
 }
 export const transactionInternals = { validatePlan, applyPlan };

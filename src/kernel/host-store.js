@@ -29,36 +29,37 @@ export const storeMethods = {
         await this.abi.api.extension.store.setBlob({ namespace: this.namespace, table, key, data });
     },
     async storeGetBlob(table, key) {
-        return this.abi.api.extension.store.getBlob({ namespace: this.namespace, table, key });
+        try {
+            return await this.abi.api.extension.store.getBlob({ namespace: this.namespace, table, key });
+        }
+        catch (error) {
+            // The public host API throws a plain Error for the explicit absent result.
+            if (error instanceof Error && error.message === `Extension store entry not found: ${this.namespace}:${table ?? 'main'}/${key}`)
+                throw new ToolkitError('STORE_BLOB_NOT_FOUND', '扩展存储分块不存在。');
+            throw error;
+        }
     },
     async storeDeleteBlob(table, key) {
         await this.abi.api.extension.store.deleteBlob({ namespace: this.namespace, table, key });
     },
     async storeDeleteTable(table) {
-        await this.abi.api.extension.store.deleteTable({ namespace: this.namespace, table });
+        try {
+            await this.abi.api.extension.store.deleteTable({ namespace: this.namespace, table });
+        }
+        catch (error) {
+            // safeInvoke wraps the serialized Rust command error in Error.cause.
+            if (error instanceof Error && error.cause?.NotFound === `Extension store table not found: ${this.namespace}:${table}`)
+                throw new ToolkitError('STORE_TABLE_NOT_FOUND', '扩展存储表不存在。');
+            throw error;
+        }
     },
     async storeListBlobKeys(table) {
         return this.abi.api.extension.store.listBlobKeys({ namespace: this.namespace, table });
     },
-    async getHostConsoleCaptureEnabled() {
-        const frontendLogs = this.assertFrontendLogsCapability();
-        let enabled;
-        try {
-            enabled = await frontendLogs.getConsoleCaptureEnabled();
-        }
-        catch {
-            throw new ToolkitError('HOST_FRONTEND_LOG_STATUS_INVALID', '读取宿主 console 捕获状态失败。');
-        }
-        if (typeof enabled !== 'boolean')
-            throw new ToolkitError('HOST_FRONTEND_LOG_STATUS_INVALID', '宿主 console 捕获状态必须是 boolean。');
-        return enabled;
-    },
     assertFrontendLogsCapability() {
         const frontendLogs = this.abi?.api?.dev?.frontendLogs;
-        const required = { list: 'list', subscribe: 'subscribe', getConsoleCaptureEnabled: 'getConsoleCaptureEnabled' };
-        const missing = Object.entries(required)
-            .filter(([, name]) => typeof frontendLogs?.[name] !== 'function')
-            .map(([, name]) => name);
+        // TauriTavern 2.4.0's console-capture getter can change capture globally.
+        const missing = ['list', 'subscribe'].filter(name => typeof frontendLogs?.[name] !== 'function');
         if (missing.length)
             throw new ToolkitError('HOST_FRONTEND_LOGS_MISSING', `TauriTavern 前端日志 ABI 缺少必需方法：${missing.join('、')}。`);
         return frontendLogs;
@@ -98,52 +99,56 @@ export const storeMethods = {
             throw new ToolkitError('HOST_FRONTEND_LOG_LIST_INVALID', '宿主前端日志尾部必须是数组。');
         return value.map(entry => this.validateFrontendLogEntry(entry));
     },
-    subscribeFrontendLogs(onEntry, onContractError) {
+    async subscribeFrontendLogs(onEntry, onContractError) {
         if (typeof onEntry !== 'function' || typeof onContractError !== 'function')
             throw new TypeError('宿主前端日志订阅需要 onEntry 与 onContractError 回调');
         const frontendLogs = this.assertFrontendLogsCapability();
-        let pendingCancel = false;
-        let underlying = null;
-        let cancelCalled = false;
-        let notified = false;
         let stopped = false;
+        let underlying = null;
         const cancel = () => {
-            if (cancelCalled)
-                return;
-            cancelCalled = true;
-            if (underlying)
-                underlying();
-            else
-                pendingCancel = true;
+            stopped = true;
+            // A stop can precede registration's reply; consume the handle whenever it arrives.
+            const unsubscribe = underlying;
+            underlying = null;
+            unsubscribe?.();
+        };
+        const cancelOnFailure = () => {
+            try {
+                cancel();
+            }
+            catch {
+                // A failed removal cannot resume delivery or replace the contract failure.
+            }
         };
         const wrapped = entry => {
-            if (cancelCalled || stopped)
+            if (stopped)
                 return;
             let validated;
             try {
                 validated = this.validateFrontendLogEntry(entry);
             }
             catch (error) {
-                if (!notified) {
-                    notified = true;
-                    stopped = true;
-                    onContractError(error);
-                }
+                cancelOnFailure();
+                onContractError(error);
                 return;
             }
-            if (pendingCancel)
-                return;
             onEntry(validated);
         };
-        return frontendLogs.subscribe(wrapped).then(unsubscribe => {
-            if (typeof unsubscribe !== 'function')
-                throw new ToolkitError('HOST_FRONTEND_LOG_SUBSCRIPTION_INVALID', '宿主前端日志订阅返回的取消函数必须是函数。');
-            underlying = unsubscribe;
-            if (pendingCancel) {
-                pendingCancel = false;
-                cancel();
-            }
-            return cancel;
-        });
+        let unsubscribe;
+        try {
+            unsubscribe = await frontendLogs.subscribe(wrapped);
+        }
+        catch {
+            stopped = true;
+            throw new ToolkitError('HOST_FRONTEND_LOG_SUBSCRIBE_FAILED', '订阅宿主前端日志失败，请检查宿主后重试。');
+        }
+        if (typeof unsubscribe !== 'function') {
+            stopped = true;
+            throw new ToolkitError('HOST_FRONTEND_LOG_SUBSCRIPTION_INVALID', '宿主前端日志订阅返回的取消函数必须是函数。');
+        }
+        underlying = unsubscribe;
+        if (stopped)
+            cancelOnFailure();
+        return cancel;
     }
 };

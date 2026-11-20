@@ -30,9 +30,9 @@ function runtime() {
         subscribe: vi.fn(() => () => undefined),
         loadProgress: vi.fn(async () => undefined),
         previewManual: vi.fn(async () => plan),
-        commitManual: vi.fn(async () => undefined),
+        commitManual: vi.fn(async () => ({ persisted: true, localMirror: true })),
         saveSettings: vi.fn(async () => undefined),
-        resetProgress: vi.fn(async () => undefined),
+        resetProgress: vi.fn(async () => ({ persisted: true, localMirror: true })),
         resetSettings: vi.fn(async () => undefined),
         clearError: vi.fn(),
     };

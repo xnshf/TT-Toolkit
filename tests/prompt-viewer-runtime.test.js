@@ -102,6 +102,22 @@ describe('prompt viewer runtime capture', () => {
         expect(runtime.state.prediction).toBeNull();
     });
 
+    it.each(['onGenerationStopped', 'onChatChanged', 'onGenerationStart'])('ignores a delayed body snapshot after %s', async event => {
+        const pending = Promise.withResolvers();
+        const { host, handlers, runtime } = setup();
+        await runtime.activate();
+        await captureSent(handlers);
+        const previous = runtime.state.snapshot;
+        host.readPromptViewerSnapshot.mockReturnValueOnce(pending.promise);
+        const capture = captureSent(handlers, 'continue');
+        handlers[event]({ type: 'normal', dryRun: false });
+        pending.resolve(snapshotData('obsolete body'));
+        await capture;
+        expect(runtime.state.snapshot).toBe(event === 'onChatChanged' ? null : previous);
+        expect(runtime.state.pendingUpdate).toBe(false);
+        expect(runtime.log.error).not.toHaveBeenCalled();
+    });
+
     it('clears generation state when generation ends', async () => {
         const { host, handlers, runtime } = setup();
         await runtime.activate();

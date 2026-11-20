@@ -508,6 +508,26 @@ describe('decision cache, manual tests and visible settings', () => {
         expect(runtime.state.testBusy).toBe(false);
     });
 
+    it('reports the unready mounted book instead of a negative condition test, then permits a retry', async () => {
+        const { runtime, host, session, decisions, log } = setup();
+        const cache = new Map();
+        host.worldInfoModule = { worldInfoCache: cache };
+        host.getMountedWorldInfoEntries.mockImplementation(TauriTavernHost.prototype.getMountedWorldInfoEntries);
+        await expect(runtime.testConditions()).rejects.toMatchObject({ code: 'WORLD_INFO_SNAPSHOT_INCOMPLETE' });
+        expect(runtime.state.status).toMatch(/未加载.*Lore.*重试/);
+        expect(runtime.state.rounds).toEqual([]);
+        expect(runtime.state.testBusy).toBe(false);
+        expect(decisions.evaluate).not.toHaveBeenCalled();
+        expect(log.warn).toHaveBeenCalledWith('decision.test_failed', {
+            data: expect.objectContaining({ reason: 'WORLD_INFO_SNAPSHOT_INCOMPLETE', uncachedCount: 1 }),
+        });
+        expect(JSON.stringify(log.warn.mock.calls)).not.toContain('Lore');
+        cache.set('Lore', { entries: Object.fromEntries(session.mounted.globalLore.map(item => [item.uid, item])) });
+        await runtime.testConditions();
+        expect(decisions.evaluate).toHaveBeenCalledOnce();
+        expect(runtime.state.rounds).toHaveLength(1);
+    });
+
     it('tests a draft without saving it and refuses tests during armed generation', async () => {
         const { runtime, session, store, decisions, arm } = setup();
         await runtime.selectWorld('Lore');

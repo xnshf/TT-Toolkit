@@ -25,6 +25,7 @@ async function suppressedRecord(world, uid, content) {
 function setup(options = {}) {
     const handlers = {};
     let stableId = 'chat-1';
+    let fileName = 'main';
     let metadata = options.chatMetadata;
     const host = {
         subscribePromptConflictSourceInvalidation: vi.fn(listener => {
@@ -38,9 +39,12 @@ function setup(options = {}) {
             handlers.worldInfo = handler;
             return () => { handlers.worldInfo = null; };
         }),
-        getCurrentChatIdentity: vi.fn(async () => ({ stableId, label: 'Test chat', ref: {} })),
+        getCurrentChatIdentity: vi.fn(async () => ({ stableId, label: 'Test chat', ref: { kind: 'character', characterId: 'character-1', fileName } })),
         getPromptConflictChatMetadata: vi.fn(async () => metadata),
-        setPromptConflictChatMetadata: vi.fn(async (_id, value) => { metadata = value; }),
+        setPromptConflictChatMetadata: vi.fn(async (_id, value) => {
+            metadata = value;
+            return { persisted: true, localMirror: true };
+        }),
         getMountedWorldInfoEntries: vi.fn(async () => structuredClone(options.mounted ?? { globalLore: [], characterLore: [], chatLore: [], personaLore: [] })),
         getPromptConflictPresetSources: vi.fn(async () => structuredClone(options.presetSources ?? [])),
         expandPromptConflictSourceMacros: vi.fn(async content => String(content ?? '')),
@@ -64,6 +68,7 @@ function setup(options = {}) {
         }),
         activeWorldInfoNames: vi.fn(() => ['Lore']),
         setStableId(value) { stableId = value; },
+        setFileName(value) { fileName = value; },
     };
     const analysis = {
         run: vi.fn(async () => ({
@@ -173,7 +178,7 @@ describe('prompt conflict snapshot building', () => {
         expect(runtime.state.metadataError).toMatch(/版本/);
         expect(runtime.metadataRecords).toEqual([]);
         await runtime.resetChatMetadata();
-        expect(host.setPromptConflictChatMetadata).toHaveBeenCalledWith('chat-1', { schemaVersion: 1, disabledWorldEntries: [] });
+        expect(host.setPromptConflictChatMetadata).toHaveBeenCalledWith('chat-1', { schemaVersion: 1, disabledWorldEntries: [] }, { kind: 'character', characterId: 'character-1', fileName: 'main' });
         expect(runtime.state.metadataError).toBe('');
     });
 
@@ -309,6 +314,60 @@ describe('prompt conflict detection', () => {
     });
 });
 
+describe('incomplete mounted world info', () => {
+    it('invalidates the old sources and report, blocks model calls and records only safe diagnostics until reread', async () => {
+        const { runtime, host, analysis, log } = setup({ presetSources: DEFAULT_PRESET });
+        const cache = new Map([['Lore', { entries: { 1: worldEntry('Lore', 1) } }]]);
+        host.worldInfoModule = { worldInfoCache: cache };
+        host.activeWorldInfoBindings = () => [{ name: 'Lore', source: 'chat' }];
+        host.getMountedWorldInfoEntries.mockImplementation(TauriTavernHost.prototype.getMountedWorldInfoEntries);
+        await runtime.refresh();
+        await runtime.runDetection();
+        expect(analysis.run).toHaveBeenCalledOnce();
+        const original = runtime.state.report;
+        cache.delete('Lore');
+        await runtime.refresh();
+        expect(runtime.state.error).toMatch(/未加载.*Lore.*重试/);
+        await runtime.selectAllAnalyzable();
+        expect(runtime.selectedSources()).toEqual([]);
+        expect(runtime.state.report).toBe(original);
+        expect(runtime.state.reportStale).toBe(true);
+        await runtime.runDetection();
+        expect(analysis.run).toHaveBeenCalledOnce();
+        expect(log.warn).toHaveBeenCalledWith('snapshot.refresh_failed', {
+            data: expect.objectContaining({ code: 'WORLD_INFO_SNAPSHOT_INCOMPLETE', uncachedCount: 1 }),
+        });
+        expect(JSON.stringify(log.warn.mock.calls)).not.toContain('Lore');
+        cache.set('Lore', { entries: { 1: worldEntry('Lore', 1) } });
+        await runtime.refresh();
+        expect(runtime.state.error).toBe('');
+        await runtime.runDetection();
+        expect(analysis.run).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops a confirmed write when a mounted source cannot be revalidated', async () => {
+        const { runtime, host, log } = setup();
+        const cache = new Map([['Lore', { entries: { 1: worldEntry('Lore', 1) } }]]);
+        host.worldInfoModule = { worldInfoCache: cache };
+        host.activeWorldInfoBindings = () => [{ name: 'Lore', source: 'chat' }, { name: 'ColdBook', source: 'global' }];
+        host.getMountedWorldInfoEntries.mockImplementation(TauriTavernHost.prototype.getMountedWorldInfoEntries);
+        cache.set('ColdBook', { entries: {} });
+        await runtime.refresh();
+        runtime.stageSuppress(runtime.snapshotSources()[0].sourceId);
+        await runtime.beginApplyReview();
+        cache.delete('ColdBook');
+        await runtime.commitStagedChanges();
+        expect(host.setPromptConflictChatMetadata).not.toHaveBeenCalled();
+        expect(runtime.state.stagedChanges.size).toBe(1);
+        expect(runtime.state.error).toMatch(/未加载.*ColdBook.*重试/);
+        expect(runtime.selectedSources()).toEqual([]);
+        expect(log.warn).toHaveBeenCalledWith('overrides.commit_failed', {
+            data: expect.objectContaining({ code: 'WORLD_INFO_SNAPSHOT_INCOMPLETE', outcome: 'not-written' }),
+        });
+        expect(JSON.stringify(log.warn.mock.calls)).not.toContain('ColdBook');
+    });
+});
+
 describe('prompt conflict chat overrides', () => {
     it('allows staging a suppression for dynamic template world entries with the warning flag', async () => {
         const { runtime, host } = setup();
@@ -399,6 +458,29 @@ describe('prompt conflict chat overrides', () => {
         await runtime.commitStagedChanges();
         expect(runtime.state.error).toMatch(/聊天已切换/);
         expect(runtime.state.stagedChanges.size).toBe(1);
+    });
+
+    it('requires the reviewed chat file and distinguishes a saved write from its skipped live mirror', async () => {
+        const { runtime, host } = setup({ mounted: { globalLore: [worldEntry('Lore', 5)], characterLore: [], chatLore: [], personaLore: [] } });
+        await runtime.refresh();
+        runtime.stageSuppress(runtime.snapshotSources()[0].sourceId);
+        await runtime.beginApplyReview();
+        host.setFileName('sibling');
+        await runtime.commitStagedChanges();
+        expect(host.setPromptConflictChatMetadata).not.toHaveBeenCalled();
+        expect(runtime.state.error).toMatch(/聊天已切换/);
+
+        host.setFileName('main');
+        await runtime.beginApplyReview();
+        host.setPromptConflictChatMetadata.mockImplementationOnce(async () => {
+            host.setFileName('sibling');
+            return { persisted: true, localMirror: false };
+        });
+        await runtime.commitStagedChanges();
+        expect(runtime.state.status).toMatch(/已写入原聊天.*未同步当前界面/);
+        expect(runtime.state.stagedChanges.size).toBe(0);
+        expect(runtime.snapshotSources()[0].suppressedForCurrentChat).toBe(false);
+        expect(host.setPromptConflictChatMetadata).toHaveBeenCalledTimes(1);
     });
 
     it('skips a no-op write when the plan produces the current metadata', async () => {

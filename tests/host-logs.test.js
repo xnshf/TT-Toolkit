@@ -34,10 +34,26 @@ function assertThrowsCode(fn, code) {
     }
 }
 
+describe('host log storage adapter', () => {
+    it('classifies only the exact host missing-Blob result and preserves other rejections', async () => {
+        const host = new TauriTavernHost();
+        const blob = new Blob(['test']);
+        const getBlob = vi.fn().mockResolvedValueOnce(blob)
+            .mockRejectedValueOnce(new Error('Extension store entry not found: tt-toolkit:logs/chunk.jsonl'));
+        const unexpected = new Error('Extension store entry not found: tt-toolkit:other/chunk.jsonl');
+        getBlob.mockRejectedValueOnce(unexpected);
+        host.abi = { api: { extension: { store: { getBlob } } } };
+        await expect(host.storeGetBlob('logs', 'chunk.jsonl')).resolves.toBe(blob);
+        await assertCode(host.storeGetBlob('logs', 'chunk.jsonl'), 'STORE_BLOB_NOT_FOUND');
+        await expect(host.storeGetBlob('logs', 'chunk.jsonl')).rejects.toBe(unexpected);
+        expect(getBlob).toHaveBeenCalledWith({ namespace: 'tt-toolkit', table: 'logs', key: 'chunk.jsonl' });
+    });
+});
+
 describe('host frontend log adapter', () => {
     it('reads and validates the host frontend log tail without passing a limit', async () => {
         const list = vi.fn(async () => [entry({ id: 7, futureField: 'ignored' })]);
-        const host = makeHost({ list, subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn() });
+        const host = makeHost({ list, subscribe: vi.fn() });
         const entries = await host.listFrontendLogs();
         expect(list).toHaveBeenCalledWith();
         expect(entries).toEqual([{ id: 7, timestampMs: 1000, level: 'info', message: 'hello', target: 'main' }]);
@@ -45,19 +61,17 @@ describe('host frontend log adapter', () => {
 
     it('fails explicitly when frontendLogs or any required method is missing', () => {
         assertThrowsCode(() => makeHost(undefined).assertFrontendLogsCapability(), 'HOST_FRONTEND_LOGS_MISSING');
-        assertThrowsCode(() => makeHost({ subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn() }).assertFrontendLogsCapability(), 'HOST_FRONTEND_LOGS_MISSING');
-        assertThrowsCode(() => makeHost({ list: vi.fn(), getConsoleCaptureEnabled: vi.fn() }).assertFrontendLogsCapability(), 'HOST_FRONTEND_LOGS_MISSING');
-        assertThrowsCode(() => makeHost({ list: vi.fn(), subscribe: vi.fn() }).assertFrontendLogsCapability(), 'HOST_FRONTEND_LOGS_MISSING');
-        expect(() => makeHost({ list: vi.fn(), subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn() }).assertFrontendLogsCapability()).not.toThrow();
+        assertThrowsCode(() => makeHost({ subscribe: vi.fn() }).assertFrontendLogsCapability(), 'HOST_FRONTEND_LOGS_MISSING');
+        assertThrowsCode(() => makeHost({ list: vi.fn() }).assertFrontendLogsCapability(), 'HOST_FRONTEND_LOGS_MISSING');
     });
 
     it('rejects a non-array tail', async () => {
-        const host = makeHost({ list: vi.fn(async () => ({ not: 'array' })), subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn() });
+        const host = makeHost({ list: vi.fn(async () => ({ not: 'array' })), subscribe: vi.fn() });
         await assertCode(host.listFrontendLogs(), 'HOST_FRONTEND_LOG_LIST_INVALID');
     });
 
     it('rejects a tail read rejection', async () => {
-        const host = makeHost({ list: vi.fn(async () => { throw new Error('down'); }), subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn() });
+        const host = makeHost({ list: vi.fn(async () => { throw new Error('down'); }), subscribe: vi.fn() });
         await assertCode(host.listFrontendLogs(), 'HOST_FRONTEND_LOG_LIST_INVALID');
     });
 
@@ -78,7 +92,7 @@ describe('host frontend log adapter', () => {
             entry({ target: null }),
         ];
         for (const bad of invalid) {
-            const host = makeHost({ list: vi.fn(async () => [bad]), subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn() });
+            const host = makeHost({ list: vi.fn(async () => [bad]), subscribe: vi.fn() });
             await assertCode(host.listFrontendLogs(), 'HOST_FRONTEND_LOG_ENTRY_INVALID');
         }
     });
@@ -90,7 +104,7 @@ describe('host frontend log adapter', () => {
             capturedHandler = handler;
             return Promise.resolve(unsubscribe);
         });
-        const host = makeHost({ list: vi.fn(), subscribe, getConsoleCaptureEnabled: vi.fn() });
+        const host = makeHost({ list: vi.fn(), subscribe });
         const onEntry = vi.fn();
         const onContractError = vi.fn();
         const cancel = await host.subscribeFrontendLogs(onEntry, onContractError);
@@ -106,7 +120,7 @@ describe('host frontend log adapter', () => {
     it('accepts entries without a target and tolerates the missing target field', async () => {
         const unsubscribe = vi.fn();
         let capturedHandler;
-        const host = makeHost({ list: vi.fn(), subscribe: vi.fn(handler => { capturedHandler = handler; return Promise.resolve(unsubscribe); }), getConsoleCaptureEnabled: vi.fn() });
+        const host = makeHost({ list: vi.fn(), subscribe: vi.fn(handler => { capturedHandler = handler; return Promise.resolve(unsubscribe); }) });
         const onEntry = vi.fn();
         const onContractError = vi.fn();
         const cancel = await host.subscribeFrontendLogs(onEntry, onContractError);
@@ -121,7 +135,7 @@ describe('host frontend log adapter', () => {
             handler(entry({ id: 3 }));
             return Promise.resolve(unsubscribe);
         });
-        const host = makeHost({ list: vi.fn(), subscribe, getConsoleCaptureEnabled: vi.fn() });
+        const host = makeHost({ list: vi.fn(), subscribe });
         const onEntry = vi.fn();
         const onContractError = vi.fn();
         const cancel = await host.subscribeFrontendLogs(onEntry, onContractError);
@@ -134,7 +148,7 @@ describe('host frontend log adapter', () => {
     it('reports an invalid runtime entry exactly once and stops delivery', async () => {
         const unsubscribe = vi.fn();
         let capturedHandler;
-        const host = makeHost({ list: vi.fn(), subscribe: vi.fn(handler => { capturedHandler = handler; return Promise.resolve(unsubscribe); }), getConsoleCaptureEnabled: vi.fn() });
+        const host = makeHost({ list: vi.fn(), subscribe: vi.fn(handler => { capturedHandler = handler; return Promise.resolve(unsubscribe); }) });
         const onEntry = vi.fn();
         const onContractError = vi.fn();
         const cancel = await host.subscribeFrontendLogs(onEntry, onContractError);
@@ -147,18 +161,43 @@ describe('host frontend log adapter', () => {
         cancel();
     });
 
-    it('rejects a subscribe that resolves with a non-function unsubscribe', async () => {
-        const host = makeHost({ list: vi.fn(), subscribe: vi.fn(async () => ({ not: 'function' })), getConsoleCaptureEnabled: vi.fn() });
-        await assertCode(host.subscribeFrontendLogs(vi.fn(), vi.fn()), 'HOST_FRONTEND_LOG_SUBSCRIPTION_INVALID');
+    it('unsubscribes once when an invalid entry stops delivery before the host returns the cancel function', async () => {
+        const ready = Promise.withResolvers();
+        let capturedHandler;
+        const unsubscribe = vi.fn();
+        const host = makeHost({ list: vi.fn(), subscribe: handler => { capturedHandler = handler; return ready.promise; } });
+        const onEntry = vi.fn();
+        const onContractError = vi.fn();
+        const subscription = host.subscribeFrontendLogs(onEntry, onContractError);
+        capturedHandler(entry({ level: 'bogus' }));
+        capturedHandler(entry());
+        expect(onContractError).toHaveBeenCalledOnce();
+        expect(onEntry).not.toHaveBeenCalled();
+        ready.resolve(unsubscribe);
+        const cancel = await subscription;
+        expect(unsubscribe).toHaveBeenCalledOnce();
+        cancel();
+        capturedHandler(entry());
+        expect(unsubscribe).toHaveBeenCalledOnce();
+        expect(onEntry).not.toHaveBeenCalled();
     });
 
-    it('rejects a non-boolean console capture status', async () => {
-        const host = makeHost({ list: vi.fn(), subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn(async () => 'yes') });
-        await assertCode(host.getHostConsoleCaptureEnabled(), 'HOST_FRONTEND_LOG_STATUS_INVALID');
-    });
-
-    it('rejects a console capture status read rejection', async () => {
-        const host = makeHost({ list: vi.fn(), subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn(async () => { throw new Error('boom'); }) });
-        await assertCode(host.getHostConsoleCaptureEnabled(), 'HOST_FRONTEND_LOG_STATUS_INVALID');
+    it.each(['invalid cancel function', 'rejection'])('stops delivery after failed registration: %s', async failure => {
+        let capturedHandler;
+        const host = makeHost({ list: vi.fn(), subscribe: async handler => {
+            capturedHandler = handler;
+            if (failure === 'rejection')
+                throw new Error('private host error');
+            return { not: 'function' };
+        } });
+        const onEntry = vi.fn();
+        const onContractError = vi.fn();
+        const subscription = host.subscribeFrontendLogs(onEntry, onContractError);
+        await assertCode(subscription, failure === 'rejection' ? 'HOST_FRONTEND_LOG_SUBSCRIBE_FAILED' : 'HOST_FRONTEND_LOG_SUBSCRIPTION_INVALID');
+        await expect(subscription).rejects.not.toThrow(/private host error/);
+        capturedHandler(entry());
+        capturedHandler(entry({ level: 'bogus' }));
+        expect(onEntry).not.toHaveBeenCalled();
+        expect(onContractError).not.toHaveBeenCalled();
     });
 });

@@ -1,7 +1,7 @@
 import { ToolkitError } from '../../kernel/errors.js';
 import { sameConversationIdentity } from '../../kernel/chat-projection.js';
 import { sha256Hex } from '../../kernel/hash.js';
-import { WORLD_INFO_LORE_LISTS, worldInfoContractFailureData } from '../../kernel/world-info.js';
+import { WORLD_INFO_LORE_LISTS, worldInfoContractFailureData, worldInfoSnapshotFailureData } from '../../kernel/world-info.js';
 import { LlmPresetStore } from '../../kernel/llm-presets.js';
 import { DecisionModelService } from '../../kernel/decision-model.js';
 import { buildDecisionContext } from './context.js';
@@ -335,7 +335,15 @@ export class WorldInfoAiRuntime {
             if (reason(error) === 'DECISION_CANCELLED' || tx.controller.signal.aborted) {
                 this.log?.info('decision.test_cancelled', { data: { operation: 'testConditions', outcome: 'cancelled' } });
             }
-            else this.report('decision.test_failed', 'testConditions', error);
+            else {
+                const sourceFailure = worldInfoSnapshotFailureData(error);
+                if (sourceFailure) {
+                    this.state.status = `${error.message} 本次未发送请求。`;
+                    this.log?.warn('decision.test_failed', { data: { operation: 'testConditions', reason: error.code,
+                        ...sourceFailure, outcome: 'not-sent' } });
+                }
+                else this.report('decision.test_failed', 'testConditions', error);
+            }
             throw new ToolkitError(reason(error), safeMessage(error));
         }
         finally {

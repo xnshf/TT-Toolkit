@@ -31,10 +31,24 @@ function fakeHost(initialMessages, initialProgress = null) {
         globalSet: vi.fn(async () => undefined),
         globalDelete: vi.fn(async () => undefined),
         chatExtensionGet: vi.fn(async () => progress),
-        chatExtensionSet: vi.fn(async (_stableId, _namespace, value) => { progress = value; }),
+        beforeProgressWrite: async () => undefined,
+        chatExtensionSet: vi.fn(async (_stableId, _namespace, value, { beforeWrite } = {}) => {
+            await host.beforeProgressWrite();
+            beforeWrite?.();
+            progress = value;
+            return { persisted: true, localMirror: true };
+        }),
+        isGenerationInProgress: vi.fn(() => false),
+        onHostEvent: vi.fn((name, handler) => {
+            if (name !== 'GENERATION_STARTED')
+                throw new Error(`Unexpected event ${name}`);
+            host.emitGenerationStarted = handler;
+            return () => { host.emitGenerationStarted = null; };
+        }),
         snapshot: vi.fn(async () => ({ identity: await host.identity(), messages: structuredClone(chat) })),
-        onGenerationEnded: vi.fn(handler => {
+        onGenerationEnded: vi.fn((handler, onSkipped) => {
             host.emitGenerationEnded = handler;
+            host.emitGenerationSkipped = onSkipped;
             return () => { host.emitGenerationEnded = null; };
         }),
         context: { get chat() { return chat; } },
@@ -77,6 +91,62 @@ describe('auto clean runtime', () => {
         // 修复前会静默跳过（不产生任何日志）；现在门卫通过并建立首轮基线。
         expect(log.debug).not.toHaveBeenCalledWith('auto.skipped', expect.anything());
         expect(runtime.mutable.progress.rulesFingerprint).not.toBe('');
+    });
+
+    it('abandons in-flight auto cleaning when a new generation starts, even before the host busy flag is set', async () => {
+        const { host, log, runtime } = await makeRuntime([assistant('baseline'), assistant('old', 'keep until clean')]);
+        await runtime.runAutomatic(2);
+        host.context.chat.push(assistant('latest'));
+        const original = structuredClone(host.context.chat);
+        host.chatExtensionSet.mockClear();
+        host.assertIdentity.mockImplementationOnce(async () => {
+            host.emitGenerationStarted('normal', {}, false);
+        });
+        host.emitGenerationEnded(3);
+        await vi.waitFor(() => expect(log.info).toHaveBeenCalledWith('auto.cancelled', expect.anything()));
+        expect(host.context.chat).toEqual(original);
+        expect(host.saveCurrentChat).not.toHaveBeenCalled();
+        expect(host.reloadCurrentChat).not.toHaveBeenCalled();
+        expect(host.chatExtensionSet).not.toHaveBeenCalled();
+        await runtime.deactivate();
+        expect(host.emitGenerationStarted).toBeNull();
+        expect(host.emitGenerationEnded).toBeNull();
+    });
+
+    it('reports an unconfirmed end without saving the body or breakpoint', async () => {
+        const { host, log, runtime } = await makeRuntime([assistant('body')]);
+        host.emitGenerationSkipped('CLEANER_GENERATION_END_UNCONFIRMED');
+        expect(runtime.state.status).toContain('手动预览');
+        expect(host.saveCurrentChat).not.toHaveBeenCalled();
+        expect(host.chatExtensionSet).not.toHaveBeenCalled();
+        expect(log.warn).toHaveBeenCalledWith('auto.end_unconfirmed', { data: expect.objectContaining({ code: 'CLEANER_GENERATION_END_UNCONFIRMED' }) });
+    });
+
+    it('reports a saved manual breakpoint without showing it as the current chat after navigation', async () => {
+        const { host, runtime } = await makeRuntime([assistant('body')]);
+        const plan = await runtime.previewManual(0);
+        host.chatExtensionSet.mockResolvedValueOnce({ persisted: true, localMirror: false });
+        await expect(runtime.commitManual(false, plan)).resolves.toEqual({ persisted: true, localMirror: false });
+        expect(runtime.state.progress).toBeNull();
+        expect(runtime.state.currentPlan).toBeNull();
+        expect(runtime.state.status).toMatch(/原聊天断点已保存.*未同步当前界面/);
+        expect(host.chatExtensionSet).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves automatic baseline and progress-only manual writes unchanged during generation', async () => {
+        const { host, runtime } = await makeRuntime([assistant('body')]);
+        host.isGenerationInProgress.mockReturnValue(true);
+        await runtime.runAutomatic(1);
+        expect(host.chatExtensionSet).not.toHaveBeenCalled();
+        const plan = await runtime.previewManual(0);
+        expect(plan.changes).toHaveLength(0);
+        host.isGenerationInProgress.mockReturnValue(false);
+        host.beforeProgressWrite = async () => host.isGenerationInProgress.mockReturnValue(true);
+        await expect(runtime.commitManual(false, plan)).rejects.toMatchObject({ code: 'CLEANER_GENERATION_ACTIVE' });
+        expect(runtime.state.currentPlan).toBe(plan);
+        expect(runtime.state.progress.stableChatId).toBeNull();
+        expect(host.saveCurrentChat).not.toHaveBeenCalled();
+        expect(host.reloadCurrentChat).not.toHaveBeenCalled();
     });
 
     it('commits an incremental clean for the next generation', async () => {
@@ -178,6 +248,19 @@ describe('auto clean runtime', () => {
         await runtime.previewManual(0);
         await expect(runtime.commitManual(false, old)).rejects.toThrow(/计划已改变/);
         expect(host.saveCurrentChat).not.toHaveBeenCalled();
+    });
+    it('reports a failed refresh separately and does not advance progress or leave a reusable preview', async () => {
+        const { host, log, runtime } = await makeRuntime([assistant('a', 'thought')]);
+        await runtime.previewManual(0);
+        host.reloadCurrentChat.mockRejectedValue(new Error('private host error detail'));
+        await expect(runtime.commitManual(false)).rejects.toMatchObject({ code: 'CLEANER_REFRESH_FAILED' });
+        expect(host.chatExtensionSet).not.toHaveBeenCalled();
+        expect(runtime.state.currentPlan).toBeNull();
+        expect(runtime.state.error).toContain('宿主已返回正文保存成功');
+        expect(runtime.state.error).not.toContain('private host error detail');
+        expect(log.warn).toHaveBeenCalledWith('operation.failed', expect.objectContaining({ data: expect.objectContaining({
+            code: 'CLEANER_REFRESH_FAILED', stage: 'chat.refresh', outcome: 'saved-without-completing',
+        }) }));
     });
     it('automatically clears other candidates but retries anomalous floors without blocking healthy ones', async () => {
         const { runtime, host, log } = await makeRuntime([assistant('baseline')], { settings: { clearSwipes: true } });

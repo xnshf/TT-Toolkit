@@ -33,7 +33,6 @@ function runtime(overrides = {}) {
             sessions: [session],
             currentEntries: [],
             configurationError: '', persistenceError: '', legacyLogsDetected: false,
-            hostConsoleCaptureEnabled: false, hostConsoleCaptureError: '',
             hostFrontendStatus: { phase: 'idle', code: '', message: '', importedCount: 0 },
             ...overrides.state,
         },
@@ -53,7 +52,7 @@ function mount(options) {
     mountDeveloperLogsPage(target, {
         runtime: options.runtime,
         exportFile,
-        enabled: true,
+        enabled: options.enabled ?? true,
         setEnabled: vi.fn(),
         log,
         featureCatalog: [{ id: 'chat-cleaner', label: '聊天清洗' }],
@@ -131,11 +130,13 @@ describe('developer log host stream UI', () => {
         expect(target.textContent).toContain('宿主日志流已停止');
     });
 
-    it('shows unknown console capture state with an independent error', () => {
-        const logger = runtime({ state: { hostConsoleCaptureEnabled: null, hostConsoleCaptureError: '读取失败：boom' } });
-        const { target } = mount({ runtime: logger });
-        expect(target.textContent).toContain('宿主 console 捕获：未知');
-        expect(target.textContent).toContain('读取失败：boom');
+    it('opens the log viewer without refreshing the host console capture setting', async () => {
+        const logger = runtime();
+        const { target } = mount({ runtime: logger, enabled: false });
+        await new Promise(resolve => setTimeout(resolve, 0)); // Let the mount's asynchronous loading finish.
+        expect(logger.refreshHostConsoleCaptureStatus).not.toHaveBeenCalled();
+        expect(target.textContent).toContain('宿主 console 捕获：请在宿主设置中查看');
+        expect(target.textContent).not.toContain('宿主前端日志不可用');
     });
 
     it('logs host write failures at warn before displaying the notice', async () => {

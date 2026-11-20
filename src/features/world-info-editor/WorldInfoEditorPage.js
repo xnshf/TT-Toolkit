@@ -39,7 +39,16 @@ export function mountWorldInfoEditorPage(target, props) {
     };
 
     let disposed = false;
-    const notices = createNoticeController(() => render());
+    let noticeSlot;
+    let settingsFeedback = [];
+    const notices = createNoticeController(syncNotice);
+
+    function syncNotice() {
+        if (disposed || !noticeSlot) return;
+        const banner = noticeBanner(notices.current, () => notices.clear(true));
+        noticeSlot.replaceChildren(...(banner ? [banner] : []));
+        noticeSlot.hidden = !banner;
+    }
 
     // 正在编辑的文本控件不得被重绘替换：移动端会因此关上键盘并丢失光标位置。
     function isTyping() {
@@ -47,10 +56,22 @@ export function mountWorldInfoEditorPage(target, props) {
         return Boolean(active && target.contains(active) && active.matches('input:not([type=checkbox]):not([type=radio]), textarea, select'));
     }
 
-    const run = createActionRunner({
-        notices,
-        render: () => render(),
-    });
+    function renderAfterAction() {
+        if (disposed) return;
+        const { selectedWorld, selectedUid, settings, settingsError } = runtime.state;
+        // 书、条目或启用状态真正改变时需要重建；同一编辑区的异步反馈不替换控件。
+        if (!view.enabled || selectedWorld !== view.formWorld || selectedUid !== view.formUid || !isTyping()) {
+            render();
+            return;
+        }
+        syncLiveStatus();
+        syncNotice();
+        target.querySelector('.master-toggle input').checked = view.enabled;
+        target.querySelector('.wie-save-option input').checked = settings.convertUserMacro;
+        if (!settingsError) settingsFeedback.forEach(node => node.remove());
+    }
+
+    const run = createActionRunner({ notices, render: renderAfterAction });
 
     // 保存不上时导航会被 runtime 拦下；给出一次明确的“放弃草稿并继续”，
     // 避免一个写不进去的草稿把整个页面锁死。世界书本身不会被本次放弃改写。
@@ -142,7 +163,6 @@ export function mountWorldInfoEditorPage(target, props) {
         // 其它入口（还原、切换条目）改动草稿后让触发词编辑器重新对齐权威草稿；
         // 用户在触发词框内输入时不触碰 DOM，避免移动端键盘闪断。
         if (currentDraft && (runtime.state.selectedUid !== view.formUid || runtime.revision !== view.formRevision)) {
-            view.formUid = runtime.state.selectedUid;
             view.formRevision = runtime.revision;
             reseedTagEditors(currentDraft);
         }
@@ -182,9 +202,9 @@ export function mountWorldInfoEditorPage(target, props) {
             h('label', { className: 'master-toggle' }, toggle, h('span', { text: view.enabled ? '已启用' : '未启用' })),
         ));
 
-        const notice = noticeBanner(notices.current, () => notices.clear(true));
-        if (notice)
-            root.append(notice);
+        noticeSlot = h('div');
+        syncNotice();
+        root.append(noticeSlot);
 
         if (!view.enabled) {
             root.append(callout('功能尚未启用。启用后可实时查看并修改世界书条目，自动同步宿主缓存。', 'warning'));
@@ -192,15 +212,16 @@ export function mountWorldInfoEditorPage(target, props) {
         if (runtime.state.error) {
             root.append(callout(runtime.state.error, 'danger'));
         }
-        if (runtime.state.settingsError) {
-            root.append(callout(runtime.state.settingsError, 'warning'));
-            root.append(actionButton('重置世界书管理设置', () => {
+        settingsFeedback = runtime.state.settingsError ? [
+            callout(runtime.state.settingsError, 'warning'),
+            actionButton('重置世界书管理设置', () => {
                 void run(async () => {
                     await runtime.resetSettings();
                     notices.show('世界书管理设置已重置。', 'success');
                 });
-            }, { className: 'secondary' }));
-        }
+            }, { className: 'secondary' }),
+        ] : [];
+        root.append(...settingsFeedback);
     }
 
     function renderTopBar() {
@@ -343,14 +364,16 @@ export function mountWorldInfoEditorPage(target, props) {
         try {
             const written = await runtime.saveCurrentDraft({ isAuto: false });
             // 没有改动时也给一次明确反馈，避免保存按钮看起来没反应。
-            if (!written)
+            if (!written) {
                 notices.show('没有需要保存的修改。', 'info');
+                syncNotice();
+            }
             return true;
         }
         catch (error) {
             // 错误保留在 runtime.state，由顶部提示与状态区持续展示，不阻断查看列表。
             notices.show(errorMessage(error), 'danger');
-            render();
+            renderAfterAction();
             return false;
         }
     }
@@ -413,9 +436,10 @@ export function mountWorldInfoEditorPage(target, props) {
         // 右侧详情区
         const detailPane = h('main', { className: 'wie-detail-pane' });
         const draft = runtime.state.currentDraft;
+        view.formWorld = runtime.state.selectedWorld;
+        view.formUid = runtime.state.selectedUid;
 
         if (draft) {
-            view.formUid = draft.uid;
             view.formRevision = runtime.revision;
             // 窄容器返回栏
             const mobileBackBar = h('div', { className: 'wie-mobile-view-header' },
@@ -465,6 +489,7 @@ export function mountWorldInfoEditorPage(target, props) {
 
     return () => {
         disposed = true;
+        notices.dispose();
         unsubscribe();
         target.classList.remove('wie-host');
         void runtime.flush().catch(() => {}); // Retain failed draft for next mount.

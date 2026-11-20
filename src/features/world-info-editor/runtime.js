@@ -193,8 +193,9 @@ export class WorldInfoEditorRuntime {
 
     setEntry(uid) {
         const raw = uid === null ? null : this.state.worldData?.entries?.[uid];
-        this.state.selectedUid = raw ? (Number.isFinite(Number(uid)) ? Number(uid) : uid) : null;
-        this.state.currentDraft = raw ? structuredClone(raw) : null;
+        const editable = isEditorEntry(raw);
+        this.state.selectedUid = editable ? (Number.isFinite(Number(uid)) ? Number(uid) : uid) : null;
+        this.state.currentDraft = editable ? structuredClone(raw) : null;
         this.state.dirty = false;
         this.state.saveStatus = 'idle';
         this.state.lastConversionCount = 0;
@@ -256,7 +257,7 @@ export class WorldInfoEditorRuntime {
             if (!sameJsonValue(fresh, baseline))
                 throw new ToolkitError('WORLD_INFO_CHANGED', '世界书已被其它操作修改；请保留当前草稿，核对后刷新。');
             const next = structuredClone(fresh);
-            transform(next);
+            transform(next, name);
             await this.host.saveWorldInfo(name, next);
             // 写入成功后磁盘回读才是 baseline：本地对象只是请求体，不代表落盘结果。
             const stored = await this.readBackWorld(name, next);
@@ -399,16 +400,37 @@ export class WorldInfoEditorRuntime {
         this.setEntry(newUid);
     }
 
-    async deleteEntry(uid) {
+    async deleteEntry(uid, { confirmedTarget } = {}) {
         // Deleting the currently selected dirty entry is intentional, not an implicit flush.
-        if (Number(uid) !== this.state.selectedUid)
+        if (this.state.selectedUid === null || String(uid) !== String(this.state.selectedUid))
             await this.flush();
         else
             this.cancelTimer();
-        const original = this.state.worldData?.entries?.[uid];
-        if (!original)
-            throw new ToolkitError('WORLD_INFO_ENTRY_MISSING', '条目不存在。');
-        await this.commit(data => { delete data.entries[uid]; });
+        let stage = 'validate-target';
+        const checkTarget = (entries, world) => {
+            if (!Object.hasOwn(entries, uid))
+                throw new ToolkitError('WORLD_INFO_ENTRY_MISSING', '条目不存在，请刷新列表。');
+            if (confirmedTarget && (confirmedTarget.world !== world || !sameJsonValue(confirmedTarget.value, entries[uid])))
+                throw new ToolkitError('WORLD_INFO_DELETE_STALE', '确认后目标条目已变化，没有删除；请刷新并重新确认。');
+        };
+        try {
+            checkTarget(this.state.worldData?.entries ?? {}, this.state.selectedWorld);
+            stage = 'commit';
+            await this.commit((data, name) => {
+                checkTarget(data.entries, name);
+                delete data.entries[uid];
+            });
+        }
+        catch (error) {
+            this.log?.warn('world_info.entry_delete_failed', {
+                data: {
+                    operation: 'delete_entry', stage,
+                    kind: error instanceof ToolkitError ? error.code : 'unknown',
+                    outcome: 'deletion-not-confirmed', nextAction: 'reload-and-review',
+                },
+            });
+            throw error;
+        }
         this.setEntry(Object.keys(this.state.worldData.entries)[0] ?? null);
     }
 

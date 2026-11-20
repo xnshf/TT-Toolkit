@@ -160,9 +160,9 @@ export function mountChatCleanerPage(target, props) {
                         });
                         if (!confirmed)
                             return;
-                        await runtime.commitManual(hasEmpty, plan);
+                        const result = await runtime.commitManual(hasEmpty, plan);
                         view.previewKeep = null;
-                        notices.show(runtime.state.status, 'success');
+                        notices.show(runtime.state.status, result.localMirror ? 'success' : 'warning');
                     });
                 }, { className: 'danger-button', disabled: stale || runtime.state.busy || plan.changes.length === 0 }),
             ));
@@ -290,7 +290,10 @@ export function mountChatCleanerPage(target, props) {
                 text: progress ? `AI 已处理至 ${progress.assistantThrough} · 用户已处理至 ${progress.userThrough} · ${progress.lastSuccessfulAt ?? '尚未成功清洗'}` : '尚未读取。',
             })),
             h('div', { className: 'actions' },
-                actionButton('重置当前聊天断点', () => { void run(async () => { await runtime.resetProgress(); notices.show('当前聊天清洗断点已重置。', 'success'); }); }, { className: 'secondary' }),
+                actionButton('重置当前聊天断点', () => { void run(async () => {
+                    const result = await runtime.resetProgress();
+                    notices.show(runtime.state.status, result.localMirror ? 'success' : 'warning');
+                }); }, { className: 'secondary' }),
                 actionButton('重置清洗设置', () => { void run(async () => { await runtime.resetSettings(); view.draft = structuredClone(runtime.state.settings); notices.show('聊天清洗设置已重置。', 'success'); }); }, { className: 'secondary' }),
             ),
         ));

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ToolkitLogger } from '../src/kernel/logging/logger.js';
+import { TauriTavernHost } from '../src/kernel/host.js';
 import { ChatExporterRuntime } from '../src/features/chat-exporter/runtime.js';
 import { createDefaultLogSettings, MIB, parseLogIndex, parseLogSettings } from '../src/kernel/logging/schema.js';
 import { boundLogEvent, projectLogPayload } from '../src/kernel/logging/serialize.js';
@@ -28,8 +29,7 @@ function createHost(initialSettings) {
         storeDeleteTable: vi.fn(async () => { blobs.clear(); for (const key of [...json.keys()])
             if (key.startsWith('logs:'))
                 json.delete(key); }),
-        getHostConsoleCaptureEnabled: vi.fn(async () => false),
-        assertFrontendLogsCapability: vi.fn(() => ({ list: vi.fn(), subscribe: vi.fn(), getConsoleCaptureEnabled: vi.fn() })),
+        assertFrontendLogsCapability: vi.fn(() => ({ list: vi.fn(), subscribe: vi.fn() })),
         listFrontendLogs: vi.fn(async () => []),
         subscribeFrontendLogs: vi.fn(async () => vi.fn()),
     };
@@ -64,10 +64,64 @@ describe('ToolkitLogger', () => {
         logger.scoped(context()).info('recorded', { data: { count: 1 }, sensitive: { secret: 'hidden' } });
         await logger.stop();
         const id = logger.state.sessions[0]?.id ?? '';
-        const events = await logger.loadSession(id);
+        const { events } = await logger.loadSession(id);
         expect(events.some(event => event.event === 'recorded')).toBe(true);
         expect(events.find(event => event.event === 'recorded')).toMatchObject({ featureId: 'test', source: 'runtime' });
         expect(events.find(event => event.event === 'recorded')).not.toHaveProperty('sensitive');
+    });
+    it('redacts short draft keys from default-mode data before bounding long events', async () => {
+        const { host } = createHost({ ...createDefaultLogSettings(), consoleLevel: 'off' });
+        const logger = new ToolkitLogger(host);
+        await logger.initialize();
+        await logger.start();
+        try {
+            logger.protectValues({ apiKey: 'k.$' });
+            logger.scoped(context()).info('oversized', {
+                data: { detail: `Bearer k.$: ${'x'.repeat(300_000)}` },
+                sensitive: { private: 'not in redacted mode' },
+            });
+            expect(logger.state.currentEntries.at(-1)).toMatchObject({ truncated: true,
+                data: { preview: expect.stringContaining('Bearer [REDACTED_PROTECTED_VALUE]') },
+            });
+            expect(logger.state.currentEntries.at(-1).sensitive).toBeUndefined();
+            expect(JSON.stringify(logger.state.currentEntries)).not.toContain('k.$');
+        }
+        finally {
+            await logger.stop();
+        }
+    });
+    it('masks keys registered after an event at export without rewriting its stored log', async () => {
+        const { host, blobs } = createHost();
+        const logger = new ToolkitLogger(host);
+        await logger.initialize();
+        await logger.start();
+        logger.scoped(context()).info('old', { data: { detail: 'echo sk-test-late-value' } });
+        await logger.stop();
+        const sessionId = logger.state.sessions[0].id;
+        const entries = (await logger.loadSession(sessionId)).events.map(event => ({ sessionId, event }));
+        const before = [...blobs.values()];
+        logger.protectValues({ apiKey: 'sk-test-late-value' });
+        for (const format of ['json', 'log']) {
+            const text = logger.exportEntries(entries, format);
+            expect(text).toContain('echo [REDACTED_PROTECTED_VALUE]');
+            expect(text).not.toContain('sk-test-late-value');
+        }
+        expect(entries.find(item => item.event.event === 'old').event.data.detail).toBe('echo sk-test-late-value');
+        expect([...blobs.values()]).toEqual(before);
+        expect(host.storeSetBlob).toHaveBeenCalledOnce();
+    });
+    it('does not start recording if model keys cannot be read and does not echo the storage error', async () => {
+        const { host, blobs } = createHost();
+        host.globalGet.mockImplementation(async key => {
+            if (key === 'llm-presets-v1')
+                throw new Error('untrusted storage error with a credential');
+        });
+        const logger = new ToolkitLogger(host);
+        await logger.initialize();
+        await expect(logger.start()).rejects.toThrow(/^模型预设值保护不可用。请重新加载工具箱后再启用日志。$/);
+        expect(logger.state.enabled).toBe(false);
+        expect(host.subscribeFrontendLogs).not.toHaveBeenCalled();
+        expect(blobs.size).toBe(0);
     });
     it('persists useful read-only chat diagnostics in redacted JSON and LOG exports without private values', async () => {
         const { host } = createHost({ ...createDefaultLogSettings(), consoleLevel: 'off' });
@@ -85,7 +139,7 @@ describe('ToolkitLogger', () => {
         await runtime.prepareDownload('private-title', true, plan);
         await logger.stop();
         const sessionId = logger.state.sessions[0].id;
-        const events = await logger.loadSession(sessionId);
+        const { events } = await logger.loadSession(sessionId);
         const issue = events.find(event => event.event === 'message.degraded');
         expect(issue).toMatchObject({ level: 'warn', data: {
             code: 'MESSAGE_BODY_NOT_STRING', field: 'mes', expected: 'string', actualType: 'object', absoluteIndex: 1, conversationIndex: 2,
@@ -110,7 +164,7 @@ describe('ToolkitLogger', () => {
         logger.scoped(context('chat-cleaner', 'transaction')).warn('sample', { data: { index: 3 }, sensitive: { before: 'secret text' } });
         await logger.stop();
         const sessionId = logger.state.sessions[0].id;
-        const entries = (await logger.loadSession(sessionId)).map(event => ({ sessionId, event }));
+        const entries = (await logger.loadSession(sessionId)).events.map(event => ({ sessionId, event }));
         const json = logger.exportEntries(entries, 'json');
         const text = logger.exportEntries(entries, 'log');
         expect(JSON.parse(json).sessions[0].events.some((event) => Boolean(event.sensitive))).toBe(true);
@@ -160,7 +214,7 @@ describe('ToolkitLogger', () => {
         const written = host.storeSetBlob.mock.calls.map(([, key]) => key);
         expect(new Set(written).size).toBe(written.length);
         expect(first.chunks.every(chunk => blobs.has(chunk.key))).toBe(true);
-        const loaded = await logger.loadSession(firstId);
+        const { events: loaded } = await logger.loadSession(firstId);
         expect(loaded).toHaveLength(first.chunks.reduce((sum, chunk) => sum + chunk.eventCount, 0));
         expect(new Set(loaded.map(event => event.sequence)).size).toBe(loaded.length);
         expect(loaded.filter(event => event.event === 'payload').at(-1).data.index).toBe(15);
@@ -258,13 +312,170 @@ describe('ToolkitLogger', () => {
             }));
             expect(JSON.stringify(warn.mock.calls)).not.toContain('private-storage-error');
             logger.scoped(context()).info('still-in-memory');
-            expect((await logger.loadSession(logger.state.currentSessionId)).some(event => event.event === 'session.started')).toBe(true);
+            expect((await logger.loadSession(logger.state.currentSessionId)).events.some(event => event.event === 'session.started')).toBe(true);
             expect(logger.state.currentEntries.some(event => event.event === 'still-in-memory')).toBe(true);
             await logger.stop();
         }
         finally {
             warn.mockRestore();
         }
+    });
+    it('cancels writes queued behind a failed flush and keeps the bounded tail after stop', async () => {
+        const { host, json } = createHost({ ...createDefaultLogSettings(), maxBytes: MIB, consoleLevel: 'off' });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const logger = new ToolkitLogger(host);
+        await logger.initialize();
+        await logger.start();
+        const sessionId = logger.state.currentSessionId;
+        const log = logger.scoped(context());
+        const writeStarted = Promise.withResolvers();
+        const write = Promise.withResolvers();
+        host.storeSetBlob.mockImplementationOnce(() => { writeStarted.resolve(); return write.promise; });
+        try {
+            const first = logger.flush();
+            await writeStarted.promise;
+            log.info('queued');
+            const queued = logger.flush();
+            log.info('pending-at-failure');
+            write.reject(new Error('private-storage-error'));
+            await Promise.all([first, queued]);
+            expect(host.storeSetBlob).toHaveBeenCalledOnce();
+            expect(warn).toHaveBeenCalledOnce();
+            expect(logger.state.persistenceError).not.toContain('private-storage-error');
+            expect((await logger.loadSession(sessionId)).events.map(event => event.event)).toEqual(['session.started', 'queued', 'pending-at-failure']);
+            for (let i = 0; i < 24; i++)
+                log.info('memory-tail', { data: { index: i, text: 'x'.repeat(60_000) } });
+            expect(logger.state.currentEntries.length).toBeLessThan(24);
+            const visibleTail = logger.state.currentEntries.map(event => event.sequence);
+            await logger.stop();
+            const { events: loaded } = await logger.loadSession(sessionId);
+            expect(loaded.map(event => event.sequence)).toEqual([...visibleTail, visibleTail.at(-1) + 1]);
+            expect(loaded.at(-1).event).toBe('session.stopping');
+            expect(logger.state.sessions[0]).toMatchObject({ interrupted: true, eventCount: 28, endedAt: expect.any(String) });
+            await logger.saveSettings({ ...logger.state.settings, minimumLevel: 'warn' });
+            expect(host.storeSetBlob).toHaveBeenCalledOnce();
+            expect(json.get('logs:index-v2').sessions[0]).toMatchObject({ eventCount: 0, chunks: [], endedAt: null });
+            expect(logger.state.persistenceError).toContain('导出');
+            await expect(logger.start()).rejects.toThrow(/清空日志/);
+
+            host.storeDeleteTable.mockRejectedValueOnce(new Error('delete failed'));
+            await expect(logger.clearLogs()).rejects.toThrow('delete failed');
+            expect((await logger.loadSession(sessionId)).events).toEqual(loaded);
+            await logger.clearLogs();
+            expect(await logger.loadSession(sessionId)).toEqual({ events: [], unreadableChunks: [] });
+            await logger.start();
+            expect(logger.state.currentSessionId).not.toBe(sessionId);
+            expect(logger.state.persistenceError).toBe('');
+        }
+        finally {
+            await logger.stop();
+            warn.mockRestore();
+        }
+    });
+    it('reads a stored prefix plus the memory tail without duplicates if indexing fails during stop', async () => {
+        const { host, json, blobs } = createHost({ ...createDefaultLogSettings(), consoleLevel: 'off' });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const logger = new ToolkitLogger(host);
+        try {
+            await logger.initialize();
+            await logger.start();
+            const sessionId = logger.state.currentSessionId;
+            const log = logger.scoped(context());
+            for (let index = 0; index < 22; index++) {
+                log.info('prefix', { data: { index, text: 'x'.repeat(240_000) } });
+                if (index % 5 === 4)
+                    await logger.flush();
+            }
+            host.storeSetJson.mockRejectedValueOnce(new Error('index failed'));
+            for (let index = 0; index < 4; index++)
+                log.info('latest', { data: { index, text: 'y'.repeat(10_000) } });
+            expect(logger.state.currentEntries[0].sequence).toBeGreaterThan(1);
+            await logger.stop();
+            const { events: loaded } = await logger.loadSession(sessionId);
+            expect(loaded.map(event => event.sequence)).toEqual(Array.from({ length: 28 }, (_, i) => i + 1));
+            expect(loaded.at(-1).event).toBe('session.stopping');
+            expect(logger.state.sessions[0].chunks.length).toBeGreaterThan(json.get('logs:index-v2').sessions[0].chunks.length);
+            const exported = JSON.parse(logger.exportEntries(loaded.map(event => ({ sessionId, event })), 'json'));
+            expect(exported.sessions[0]).toMatchObject({ meta: { interrupted: true }, events: loaded });
+
+            const [firstChunk] = logger.state.sessions[0].chunks;
+            const tail = logger.state.stoppedMemorySession.entries;
+            blobs.delete(firstChunk.key);
+            const partial = await logger.loadSession(sessionId);
+            expect(partial.unreadableChunks).toEqual([expect.objectContaining({
+                code: 'LOG_CHUNK_READ_FAILED', firstSequence: 1, lastSequence: tail[0].sequence - 1, eventCount: tail[0].sequence - 1,
+            })]);
+            expect(partial.events.map(event => event.sequence)).toEqual(tail.map(event => event.sequence));
+
+            const restarted = new ToolkitLogger(host);
+            await restarted.initialize();
+            expect(restarted.state.sessions[0]).toMatchObject({ interrupted: true });
+            expect((await restarted.loadSession(sessionId)).events.map(event => event.event)).not.toContain('latest');
+        }
+        finally {
+            await logger.stop();
+            warn.mockRestore();
+        }
+    });
+    it('clears the memory tail but cannot resume if rebuilding the empty index fails', async () => {
+        const { host } = createHost({ ...createDefaultLogSettings(), consoleLevel: 'off' });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const logger = new ToolkitLogger(host);
+        try {
+            await logger.initialize();
+            await logger.start();
+            const sessionId = logger.state.currentSessionId;
+            host.storeSetBlob.mockRejectedValueOnce(new Error('blob failed'));
+            await logger.flush();
+            host.storeSetJson.mockRejectedValueOnce(new Error('index failed'));
+            await expect(logger.clearLogs()).rejects.toThrow('index failed');
+            expect(warn).toHaveBeenLastCalledWith('[TT-Toolkit][system][logger][logs.clear_failed]', expect.objectContaining({
+                code: 'LOG_EMPTY_INDEX_WRITE_FAILED', nextAction: 'inspect-log-storage-and-reload',
+            }));
+            expect(logger.state.enabled).toBe(false);
+            expect(logger.state.persistenceError).toContain('日志已删除，但空索引写入失败');
+            expect(await logger.loadSession(sessionId)).toEqual({ events: [], unreadableChunks: [] });
+            await expect(logger.start()).rejects.toThrow(/日志存储不可用/);
+        }
+        finally {
+            await logger.stop();
+            warn.mockRestore();
+        }
+    });
+    it('clears a fresh installation only when the host confirms that its log table is absent', async () => {
+        const { host, json } = createHost();
+        const adapter = new TauriTavernHost();
+        const missing = 'Extension store table not found: tt-toolkit:logs';
+        const deleteTable = vi.fn().mockRejectedValue(new Error(`Not found: ${missing}`, { cause: { NotFound: missing } }));
+        adapter.abi = { api: { extension: { store: { deleteTable } } } };
+        host.storeDeleteTable = adapter.storeDeleteTable.bind(adapter);
+        const logger = new ToolkitLogger(host);
+        await logger.initialize();
+
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            const failures = [
+                new Error('Internal server error: delete table: access denied', { cause: { InternalServerError: 'delete table: access denied' } }),
+                new Error('invoke transport failed'),
+                new Error('Not found: Extension store table not found: tt-toolkit:other', { cause: { NotFound: 'Extension store table not found: tt-toolkit:other' } }),
+                new Error(`Not found: ${missing}`),
+            ];
+            for (const failure of failures) {
+                deleteTable.mockRejectedValueOnce(failure);
+                await expect(logger.clearLogs()).rejects.toBe(failure);
+                expect(json.has('logs:index-v2')).toBe(false);
+                expect(warn).toHaveBeenLastCalledWith('[TT-Toolkit][system][logger][logs.clear_failed]', expect.objectContaining({
+                    code: 'LOG_TABLE_DELETE_FAILED', nextAction: 'inspect-log-storage-and-retry',
+                }));
+            }
+            expect(JSON.stringify(warn.mock.calls)).not.toContain('access denied');
+            await logger.clearLogs();
+            expect(warn).toHaveBeenCalledTimes(failures.length);
+            expect(deleteTable).toHaveBeenLastCalledWith({ namespace: 'tt-toolkit', table: 'logs' });
+            expect(json.get('logs:index-v2')).toEqual({ schemaVersion: 2, sessions: [] });
+            expect(logger.state).toMatchObject({ enabled: false, sessions: [], persistenceError: '' });
+        }
+        finally { warn.mockRestore(); }
     });
     it('blocks legacy logs until the log table is explicitly cleared', async () => {
         const { host, json } = createHost();

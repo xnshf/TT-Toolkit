@@ -17,6 +17,7 @@ export class ModelSettingsRuntime {
         this.mutable = {
             settings: createDefaultLlmPresetSettings(),
             busy: false,
+            loaded: false,
             status: '',
             error: '',
             damaged: false,
@@ -40,18 +41,25 @@ export class ModelSettingsRuntime {
     }
 
     async load() {
+        if (this.state.busy)
+            return;
         this.mutable.busy = true;
+        this.mutable.loaded = false;
+        this.mutable.status = '';
+        this.mutable.error = '';
         this.notify();
         try {
             const settings = await this.store.load();
             this.logger.protectValues(settings);
             this.mutable.settings = settings;
-            this.mutable.error = '';
+            this.mutable.loaded = true;
             this.mutable.damaged = false;
         }
         catch (error) {
-            this.mutable.error = errorMessage(error);
             this.mutable.damaged = error instanceof ToolkitError && ['INVALID_SCHEMA', 'UNSUPPORTED_SCHEMA'].includes(error.code);
+            this.mutable.error = this.state.damaged
+                ? '模型预设格式无法读取。可重新加载，或确认重置损坏的预设。'
+                : '未能加载模型预设，未修改已保存的预设。请重新加载后再编辑。';
             this.log.fail('presets.load_failed', 'presets.load', error, { includeError: false });
         }
         finally {
@@ -61,16 +69,30 @@ export class ModelSettingsRuntime {
     }
 
     async save(settings) {
+        if (!this.state.loaded || this.state.busy)
+            throw new ToolkitError('PRESET_WRITE_BLOCKED', '请在模型预设加载成功且当前操作结束后再保存。');
+        await this.#write(settings, { reset: false });
+    }
+
+    async reset() {
+        if ((!this.state.loaded && !this.state.damaged) || this.state.busy)
+            throw new ToolkitError('PRESET_WRITE_BLOCKED', '请先重新加载模型预设，再确认是否重置。');
+        await this.#write(createDefaultLlmPresetSettings(), { reset: true });
+    }
+
+    async #write(settings, { reset }) {
         this.mutable.busy = true;
         this.notify();
         try {
             const parsed = parseLlmPresetSettings(settings);
-            this.mutable.settings = await this.store.save(parsed);
             this.logger.protectValues(parsed);
-            this.mutable.status = '模型预设已保存。';
+            this.mutable.settings = await this.store.save(parsed);
+            this.mutable.loaded = true;
+            this.mutable.status = reset ? '模型预设已重置；原预设及访问密钥已清除。' : '模型预设已保存。';
             this.mutable.error = '';
             this.mutable.damaged = false;
-            void this.probeMissingCapabilities(parsed).catch(() => undefined);
+            if (!reset)
+                void this.probeMissingCapabilities(parsed).catch(() => undefined);
         }
         catch (error) {
             this.mutable.error = errorMessage(error);
@@ -81,12 +103,6 @@ export class ModelSettingsRuntime {
             this.mutable.busy = false;
             this.notify();
         }
-    }
-
-    async reset() {
-        await this.save(createDefaultLlmPresetSettings());
-        this.mutable.status = '模型预设已重置；原预设及访问密钥已清除。';
-        this.notify();
     }
 
     async probeMissingCapabilities(settings) {
@@ -113,7 +129,8 @@ export class ModelSettingsRuntime {
 
     requestModels(preset) {
         const draft = structuredClone(preset);
-        return preset.protocol === 'systemone'
+        this.logger.protectValues(draft);
+        return draft.protocol === 'systemone'
             ? this.fetchDecisionModelsRequest(draft)
             : this.fetchModelsRequest(this.host, draft);
     }

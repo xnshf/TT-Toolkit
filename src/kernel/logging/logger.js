@@ -1,4 +1,4 @@
-import { errorKind, errorMessage } from '../errors.js';
+import { ToolkitError, errorKind, errorMessage } from '../errors.js';
 import { createDefaultLogIndex, createDefaultLogSettings, levelEnabled, parseLogIndex, parseLogSettings } from './schema.js';
 import { boundLogEvent, projectLogPayload } from './serialize.js';
 import {
@@ -6,7 +6,6 @@ import {
     degradeHostStream,
     mergeHostEntries,
     probeHostFrontendLogs,
-    readHostConsoleCapture,
     recordHostEntry,
     rollbackStart,
     stopHostStream,
@@ -47,7 +46,6 @@ export class ToolkitLogger {
     memoryBytes = 0;
     persistenceAvailable = true;
     storageBlocked = false;
-    volatileSessions = new Map();
     hostSubscriptionCancel = null;
     hostIdSet = new Set();
     redactor = createRedactor();
@@ -58,11 +56,10 @@ export class ToolkitLogger {
         sessions: [],
         currentSessionId: null,
         currentEntries: [],
+        stoppedMemorySession: null,
         persistenceError: '',
         configurationError: '',
         legacyLogsDetected: false,
-        hostConsoleCaptureEnabled: null,
-        hostConsoleCaptureError: '',
         hostFrontendStatus: { phase: 'idle', code: '', message: '', importedCount: 0 },
     };
     state = this.mutable;
@@ -132,14 +129,11 @@ export class ToolkitLogger {
                 });
             }
         }
-        await this.probeHostFrontendLogs();
+        probeHostFrontendLogs(this);
         await this.loadProtectedValues();
         globalThis.addEventListener('pagehide', () => { if (this.mutable.enabled)
             void this.flush(); });
         this.notify();
-    }
-    probeHostFrontendLogs() {
-        return probeHostFrontendLogs(this);
     }
     loadProtectedValues() {
         return this.redactor.load(this.host);
@@ -206,7 +200,6 @@ export class ToolkitLogger {
         let pendingSession = null;
         try {
             this.host.assertFrontendLogsCapability();
-            await readHostConsoleCapture(this);
             subscribeCancel = await this.host.subscribeFrontendLogs(onEntry, onContractError);
             if (contractFailed)
                 throw contractFailed;
@@ -243,7 +236,6 @@ export class ToolkitLogger {
             this.mutable.legacyLogsDetected = false;
             this.persistenceAvailable = true;
             this.storageBlocked = false;
-            this.volatileSessions.clear();
             this.syncSessions();
             this.record('info', 'system', 'logger', 'session.started', { data: { privacyMode: session.privacyMode, maxBytes: this.mutable.settings.maxBytes } });
             const merged = this.mergeHostEntries(tailEntries, initBuffer);
@@ -291,8 +283,11 @@ export class ToolkitLogger {
             await this.flushQueue;
         }
         finally {
-            if (this.current)
+            if (this.current) {
                 this.current.endedAt = new Date().toISOString();
+                if (!this.persistenceAvailable)
+                    this.mutable.stoppedMemorySession = { id: this.current.id, entries: this.mutable.currentEntries };
+            }
             this.current = null;
             this.mutable.currentSessionId = null;
             this.mutable.currentEntries = [];
@@ -301,7 +296,8 @@ export class ToolkitLogger {
             this.memoryBytes = 0;
             this.hostIdSet = new Set();
             this.syncSessions();
-            await this.persistIndexSafely();
+            if (!this.storageBlocked)
+                await this.persistIndexSafely();
         }
         this.notify();
     }
@@ -318,9 +314,16 @@ export class ToolkitLogger {
             await this.host.globalSet(SETTINGS_KEY, validated);
             this.mutable.settings = validated;
             this.mutable.configurationError = '';
-            await this.enforceRetention();
-            if (!this.storageBlocked)
-                await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
+            this.trimMemory();
+            const retention = this.flushQueue.then(async () => {
+                if (!this.storageBlocked) {
+                    await this.enforceRetention();
+                    await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
+                }
+            });
+            this.flushQueue = retention.catch(() => undefined);
+            await retention;
+            this.notify();
         }
         catch (error) {
             this.record('warn', 'system', 'logger', 'settings.save_failed', {
@@ -347,22 +350,38 @@ export class ToolkitLogger {
         const restart = this.mutable.enabled;
         if (restart)
             await this._stopInternal();
+        let phase = 'delete-table';
         try {
-            await this.host.storeDeleteTable(LOG_TABLE);
+            await this.host.storeDeleteTable(LOG_TABLE).catch(error => {
+                if (!(error instanceof ToolkitError) || error.code !== 'STORE_TABLE_NOT_FOUND')
+                    throw error;
+            });
             this.index = createDefaultLogIndex();
             this.mutable.currentEntries = [];
-            this.mutable.persistenceError = '';
+            this.mutable.stoppedMemorySession = null;
             this.mutable.legacyLogsDetected = false;
+            this.syncSessions();
+            phase = 'empty-index-write';
+            try {
+                await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
+            }
+            catch (error) {
+                this.persistenceAvailable = false;
+                this.storageBlocked = true;
+                this.mutable.persistenceError = '日志已删除，但空索引写入失败。请检查存储后重新加载工具箱。';
+                this.notify();
+                throw error;
+            }
+            this.mutable.persistenceError = '';
             this.persistenceAvailable = true;
             this.storageBlocked = false;
-            this.volatileSessions.clear();
-            this.syncSessions();
-            await this.host.storeSetJson(LOG_TABLE, INDEX_KEY, this.index);
+            this.notify();
         }
         catch (error) {
-            this.record('error', 'system', 'logger', 'logs.clear_failed', {
-                data: { operation: 'logs.clear', ...errorKind(error) },
-                sensitive: { error },
+            console.warn('[TT-Toolkit][system][logger][logs.clear_failed]', {
+                operation: 'logs.clear', phase, sourceLocation: 'kernel/logging/logger.js:_clearLogsInternal',
+                code: phase === 'delete-table' ? 'LOG_TABLE_DELETE_FAILED' : 'LOG_EMPTY_INDEX_WRITE_FAILED',
+                outcome: 'clear-incomplete', nextAction: phase === 'delete-table' ? 'inspect-log-storage-and-retry' : 'inspect-log-storage-and-reload',
             });
             throw error;
         }
@@ -374,21 +393,6 @@ export class ToolkitLogger {
     }
     exportEntries(entries, format) {
         return exportEntries(this, entries, format);
-    }
-    async refreshHostConsoleCaptureStatus() {
-        try {
-            this.mutable.hostConsoleCaptureEnabled = await this.host.getHostConsoleCaptureEnabled();
-            this.mutable.hostConsoleCaptureError = '';
-        }
-        catch (error) {
-            this.mutable.hostConsoleCaptureEnabled = null;
-            this.mutable.hostConsoleCaptureError = errorMessage(error);
-            this.record('error', 'system', 'logger', 'host.status_refresh_failed', {
-                data: { operation: 'host.status.refresh', ...errorKind(error) },
-                sensitive: { error },
-            });
-        }
-        this.notify();
     }
     record(level, featureId, source, event, input = {}) {
         this.recordInternal(level, featureId, source, event, input, true);
@@ -415,8 +419,10 @@ export class ToolkitLogger {
             privacyMode: this.mutable.settings.privacyMode,
         });
         const lineBytes = bytes(eventLine(bounded));
-        this.pending.push(bounded);
-        this.pendingBytes += lineBytes;
+        if (this.persistenceAvailable) {
+            this.pending.push(bounded);
+            this.pendingBytes += lineBytes;
+        }
         this.current.eventCount += 1;
         this.mutable.currentEntries.push(bounded);
         this.memoryBytes += lineBytes;

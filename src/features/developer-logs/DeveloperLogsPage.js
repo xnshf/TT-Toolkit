@@ -1,60 +1,56 @@
-import { actionButton, callout, h, pagerBar } from '../../ui/dom.js';
+import { actionButton, callout, h } from '../../ui/dom.js';
 import { searchField } from '../../ui/search-field.js';
 import { errorMessage } from '../../kernel/errors.js';
 import { logFileExportFailure } from '../../kernel/file-export.js';
 import { MIB } from '../../kernel/logging/schema.js';
 import { confirmDanger } from '../../ui/confirm.js';
 import { createNoticeController, noticeBanner } from '../../ui/notice.js';
-import { captureFocus, restoreFocus } from '../../ui/focus-keep.js';
 import { unsavedChangesGuard } from '../../ui/leave-guard.js';
+import { createLogList } from './log-list.js';
+import { createLogHistory, historyWarnings, sessionLabel } from './log-history.js';
+import { createSettingsForm, LEVELS } from './settings-form.js';
 
-const PAGE_SIZE = 100;
-const LEVELS = ['debug', 'info', 'warn', 'error'];
-
-function documentContext(target) {
-    const ownerDocument = target.ownerDocument;
-    const ownerWindow = ownerDocument.defaultView;
-    try {
-        if (ownerWindow?.top?.document)
-            return { document: ownerWindow.top.document, window: ownerWindow.top };
-    }
-    catch {
-        // Cross-origin embedding is not expected, but the iframe document remains usable.
-    }
-    return { document: ownerDocument, window: ownerWindow ?? globalThis };
-}
-
-function exportFilename(extension) {
-    return `tt-toolkit-logs-${new Date().toISOString().replaceAll(':', '-')}.${extension}`;
-}
-
-async function copyText(target, text) {
-    const context = documentContext(target);
-    let clipboardError = null;
-    try {
-        if (context.window.navigator?.clipboard?.writeText) {
-            await context.window.navigator.clipboard.writeText(text);
-            return;
-        }
-    }
-    catch (error) {
-        clipboardError = error;
-    }
-    const textarea = context.document.createElement('textarea');
-    textarea.value = text;
-    textarea.readOnly = true;
-    textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
-    context.document.body.append(textarea);
-    textarea.focus();
-    textarea.select();
-    const copied = context.document.execCommand?.('copy') === true;
-    textarea.remove();
-    if (!copied)
-        throw clipboardError ?? new Error('当前 WebView 不允许访问剪贴板');
-}
+import { confirmPartialLogs, copyText, exportFilename, isMemorySession } from './log-export.js';
 
 function option(value, text, selected = false) {
     return h('option', { value, text, selected });
+}
+
+function setText(element, text) {
+    if (element.textContent !== text)
+        element.textContent = text;
+}
+
+// 使用锚点保持原有 grid 布局，仅替换发生变化的提示，不移动相邻控件。
+function slot(document) {
+    const anchor = document.createComment('log-slot');
+    let nodes = [];
+    let shown;
+    return {
+        anchor,
+        update(key, build) {
+            if (key === shown)
+                return;
+            shown = key;
+            nodes.forEach(node => node.remove());
+            nodes = build().filter(Boolean);
+            anchor.before(...nodes);
+        },
+    };
+}
+
+function optionUpdater(select, emptyLabel) {
+    let previousOptions;
+    return (options, selected) => {
+        const key = JSON.stringify(options);
+        if (previousOptions !== key) {
+            previousOptions = key;
+            select.replaceChildren(option('', emptyLabel), ...options.map(([value, label]) => option(value, label)));
+        }
+        const value = options.some(([value]) => value === selected) ? selected : '';
+        if (select.value !== value)
+            select.value = value;
+    };
 }
 
 export function mountDeveloperLogsPage(target, props) {
@@ -65,29 +61,11 @@ export function mountDeveloperLogsPage(target, props) {
     const reportFailure = (event, operation, error) => {
         logFileExportFailure(log, event, operation, error, 'developer-logs/DeveloperLogsPage.js');
     };
-    const hostStatusIssues = () => {
-        const issues = [];
-        const status = runtime.state.hostFrontendStatus;
-        if (status?.phase === 'unavailable')
-            issues.push('宿主前端日志不可用');
-        if (status?.phase === 'degraded')
-            issues.push('宿主日志流已降级');
-        if (runtime.state.persistenceError)
-            issues.push('持久化失败');
-        if (runtime.state.configurationError)
-            issues.push('日志设置损坏');
-        if (runtime.state.legacyLogsDetected)
-            issues.push('旧版日志结构');
-        if (runtime.state.hostConsoleCaptureError)
-            issues.push('宿主 console 状态未知');
-        return issues;
-    };
     const view = {
         enabled: props.enabled,
         draft: structuredClone(runtime.state.settings),
         maxMiB: runtime.state.settings.maxBytes / MIB,
         selectedSession: runtime.state.currentSessionId ?? runtime.state.sessions.at(-1)?.id ?? '',
-        loadedSessions: new Map(),
         levels: { debug: true, info: true, warn: true, error: true },
         featureFilter: '',
         sourceFilter: '',
@@ -103,7 +81,8 @@ export function mountDeveloperLogsPage(target, props) {
     };
     let disposed = false;
     let actionNoticeTimer = null;
-    const notices = createNoticeController(() => render());
+    const notices = createNoticeController(() => renderNotices());
+    const history = createLogHistory(runtime, () => renderRuntime());
 
     // 日志设置只有点“保存设置”才落盘；容量输入是独立的 MiB 数值，需要并回草稿再比较。
     props.setLeaveGuard?.(unsavedChangesGuard(target.ownerDocument, {
@@ -121,7 +100,7 @@ export function mountDeveloperLogsPage(target, props) {
             actionNoticeTimer = setTimeout(() => {
                 actionNoticeTimer = null;
                 view.actionNotice = null;
-                render();
+                renderNotices();
             }, notice.kind === 'success' ? 4500 : 3000);
         }
     }
@@ -130,15 +109,19 @@ export function mountDeveloperLogsPage(target, props) {
         ? runtime.state.sessions.filter(session => session.id === view.selectedSession)
         : runtime.state.sessions;
     const entries = () => selectedSessions().flatMap(session => {
-        const sessionEntries = session.id === runtime.state.currentSessionId
+        const { currentSessionId, stoppedMemorySession } = runtime.state;
+        const sessionEntries = session.id === currentSessionId
             ? view.paused ? view.pausedEntries : runtime.state.currentEntries
-            : view.loadedSessions.get(session.id) ?? [];
+            : history.entries(session.id) ?? (session.id === stoppedMemorySession?.id ? stoppedMemorySession.entries : []);
         return sessionEntries.map(event => ({ sessionId: session.id, event }));
     });
-    const filtered = () => entries().filter(({ event }) => view.levels[event.level]
-        && (!view.featureFilter || event.featureId === view.featureFilter)
-        && (!view.sourceFilter || event.source === view.sourceFilter)
-        && (!view.search || JSON.stringify(event).toLowerCase().includes(view.search.toLowerCase())));
+    const filtered = (records = entries()) => {
+        const query = view.search.toLowerCase();
+        return records.filter(({ event }) => view.levels[event.level]
+            && (!view.featureFilter || event.featureId === view.featureFilter)
+            && (!view.sourceFilter || event.source === view.sourceFilter)
+            && (!query || JSON.stringify(event).toLowerCase().includes(query)));
+    };
 
     const run = async (task, action = null) => {
         notices.clear();
@@ -162,19 +145,38 @@ export function mountDeveloperLogsPage(target, props) {
 
     async function reloadSession() {
         view.paused = false;
+        view.pausedEntries = [];
         view.page = 0;
         view.expanded = null;
-        view.loadedSessions = new Map();
-        const closedSessions = selectedSessions().filter(session => session.id !== runtime.state.currentSessionId);
-        const loaded = await Promise.all(closedSessions.map(async session => [session.id, await runtime.loadSession(session.id)]));
-        view.loadedSessions = new Map(loaded);
+        await history.reload(selectedSessions().filter(session => session.id !== runtime.state.currentSessionId));
     }
 
     function togglePause() {
-        if (!view.paused)
-            view.pausedEntries = structuredClone(runtime.state.currentEntries);
+        // 内核只增删事件，不修改已记录事件对象。保留引用以复用仍可见的行。
+        view.pausedEntries = view.paused ? [] : runtime.state.currentEntries.slice();
         view.paused = !view.paused;
-        render();
+        renderViewer();
+    }
+
+    async function withExportRecords(action) {
+        const sessions = selectedSessions();
+        if (sessions.some(history.pending)) {
+            setActionNotice({ kind: 'neutral', text: '正在读取历史会话，请稍后再试。' });
+            return;
+        }
+        const records = entries();
+        const matches = filtered(records);
+        const confirmation = confirmPartialLogs(target.ownerDocument, runtime.state, sessions, records, history.issues(sessions), matches.length);
+        if (confirmation && (!await confirmation || disposed)) {
+            setActionNotice(null);
+            return;
+        }
+        const available = new Set(runtime.state.sessions.map(session => session.id));
+        if (sessions.some(session => !available.has(session.id))) {
+            setActionNotice({ kind: 'error', text: '输出范围内的会话已变化，请重新选择后再试。' });
+            return;
+        }
+        await action(matches);
     }
 
     async function exportDownload(records, format, actionId) {
@@ -241,44 +243,19 @@ export function mountDeveloperLogsPage(target, props) {
         });
     }
 
-    function settingsGrid() {
-        const privacy = h('select', { dataset: { control: 'privacy' } },
-            option('redacted', '脱敏', view.draft.privacyMode === 'redacted'),
-            option('full', '完整（不脱敏）', view.draft.privacyMode === 'full'),
-        );
-        privacy.addEventListener('change', () => { view.draft.privacyMode = privacy.value; render(); });
-        const minimum = h('select', { attrs: { 'aria-label': '最低记录级别' } }, LEVELS.map(level => option(level, level, view.draft.minimumLevel === level)));
-        minimum.addEventListener('change', () => { view.draft.minimumLevel = minimum.value; });
-        const consoleLevel = h('select', { attrs: { 'aria-label': 'console 同步级别' } }, ['off', ...LEVELS].map(level => option(level, level, view.draft.consoleLevel === level)));
-        consoleLevel.addEventListener('change', () => { view.draft.consoleLevel = consoleLevel.value; });
-        const max = h('input', { type: 'number', min: 1, max: 200, step: 1, value: view.maxMiB, attrs: { 'aria-label': '容量上限（MiB）' } });
-        max.addEventListener('input', () => { view.maxMiB = Number(max.value); });
-        return h('div', { className: 'log-settings-grid' },
-            h('label', {}, '隐私模式', privacy),
-            h('label', {}, '最低记录级别', minimum),
-            h('label', {}, 'console 同步', consoleLevel),
-            h('label', {}, '容量上限（MiB）', max),
-        );
-    }
-
     function toolbar() {
         const features = h('select', { dataset: { control: 'feature-filter' }, attrs: { 'aria-label': '按功能筛选日志' } },
             option('', '全部功能', !view.featureFilter),
             featureCatalog.map(feature => option(feature.id, feature.label, view.featureFilter === feature.id)),
         );
-        features.addEventListener('change', () => { view.featureFilter = features.value; view.page = 0; render(); });
-        const sessions = h('select', { dataset: { control: 'session-filter' }, attrs: { 'aria-label': '选择日志会话' } }, option('', '全部会话', !view.selectedSession), runtime.state.sessions.map(session => option(
-            session.id,
-            `${session.startedAt} · ${session.privacyMode}${session.interrupted ? ' · 中断' : ''}`,
-            view.selectedSession === session.id,
-        )));
+        features.addEventListener('change', () => { view.featureFilter = features.value; view.page = 0; renderViewer(); });
+        const sessions = h('select', { dataset: { control: 'session-filter' }, ariaLabel: '选择日志会话' });
         sessions.addEventListener('change', () => {
             view.selectedSession = sessions.value;
             void run(reloadSession);
         });
-        const sources = [...new Set(entries().map(({ event }) => event.source))].sort();
-        const source = h('select', { dataset: { control: 'source-filter' }, attrs: { 'aria-label': '按来源筛选日志' } }, option('', '全部来源', !view.sourceFilter), sources.map(value => option(value, value, view.sourceFilter === value)));
-        source.addEventListener('change', () => { view.sourceFilter = source.value; view.page = 0; render(); });
+        const source = h('select', { dataset: { control: 'source-filter' }, ariaLabel: '按来源筛选日志' });
+        source.addEventListener('change', () => { view.sourceFilter = source.value; view.page = 0; renderViewer(); });
         const search = searchField({
             value: view.search,
             placeholder: '搜索事件或数据',
@@ -287,185 +264,217 @@ export function mountDeveloperLogsPage(target, props) {
             onQuery: value => {
                 view.search = value;
                 view.page = 0;
-                render('search');
+                renderViewer();
             },
         });
-        return h('div', { className: 'log-toolbar' }, features, sessions, source, search);
+        return {
+            element: h('div', { className: 'log-toolbar' }, features, sessions, source, search),
+            updateSessions: optionUpdater(sessions, '全部会话'),
+            updateSources: optionUpdater(source, '全部来源'),
+        };
     }
 
-    function logList() {
-        const results = filtered();
-        const pageCount = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
-        view.page = Math.min(view.page, pageCount - 1);
-        const visible = results.slice(view.page * PAGE_SIZE, (view.page + 1) * PAGE_SIZE);
-        const list = h('div', { className: 'log-list' });
-        for (const record of visible) {
-            const { sessionId: entrySessionId, event: entry } = record;
-            const entryKey = `${entrySessionId}:${entry.sequence}`;
-            const row = actionButton('', () => {
-                view.expanded = view.expanded === entryKey ? null : entryKey;
-                render();
-            }, { className: `log-row level-${entry.level}` });
-            row.append(
-                h('span', { text: entry.timestamp.slice(11, 23) }),
-                h('b', { text: entry.level }),
-                h('em', { className: 'log-feature', text: featureLabels.get(entry.featureId) ?? entry.featureId }),
-                h('i', { text: entry.source }),
-                h('strong', { text: entry.event }),
-            );
-            if (view.expanded === entryKey) {
-                if (entry.featureId === 'system' && entry.source === 'host-frontend') {
-                    const details = h('div', { className: 'log-expanded-host' },
-                        h('pre', { text: JSON.stringify({
-                            hostEntryId: entry.data?.hostEntryId,
-                            hostTimestampMs: entry.data?.hostTimestampMs,
-                            hostLevel: entry.data?.hostLevel,
-                            messagePresent: entry.data?.messagePresent,
-                        }, null, 2) }),
-                    );
-                    if (entry.privacyMode === 'full') {
-                        if (typeof entry.sensitive?.message === 'string')
-                            details.append(h('p', { className: 'log-host-message', text: entry.sensitive.message }));
-                        if (typeof entry.sensitive?.target === 'string')
-                            details.append(h('p', { className: 'log-host-target', text: `来源：${entry.sensitive.target}` }));
-                    }
-                    else {
-                        details.append(h('p', { className: 'log-host-redacted', text: '消息因隐私模式未保存' }));
-                    }
-                    row.append(details);
-                }
-                else {
-                    row.append(h('pre', { text: JSON.stringify({ sessionId: entrySessionId, ...entry }, null, 2) }));
-                }
-            }
-            list.append(row);
-        }
-        if (!visible.length) {
-            list.append(h('p', { className: 'empty-state', text: hostStatusIssues().length ? '暂无匹配的日志。' : '没有匹配的日志。' }));
-        }
-        return [list, pagerBar({
-            page: view.page,
-            pageCount,
-            onPrevious: () => { view.page -= 1; render(); },
-            onNext: () => { view.page += 1; render(); },
-        })];
-    }
-
-    function render(focusControl = '') {
-        if (disposed)
-            return;
-        const snapshot = captureFocus(target) ?? (focusControl ? { key: focusControl, caret: null } : null);
-        const root = h('section', { className: 'feature-page developer-logs-page' });
-        const toggle = h('input', { type: 'checkbox', checked: view.enabled });
-        toggle.addEventListener('change', () => {
-            const next = toggle.checked;
-            void run(async () => {
+    const root = h('section', { className: 'feature-page developer-logs-page' });
+    const toggle = h('input', { type: 'checkbox', checked: view.enabled, dataset: { control: 'enabled' } });
+    const enabledStatus = h('span');
+    toggle.addEventListener('change', () => {
+        const next = toggle.checked;
+        void run(async () => {
+            try {
                 await props.setEnabled(next);
                 view.enabled = next;
-            });
+            }
+            finally {
+                toggle.checked = view.enabled;
+            }
         });
-        root.append(h('header', { className: 'feature-header' },
-            h('div', {},
-                h('p', { className: 'eyebrow', text: '设置' }),
-                h('h2', { text: '日志' }),
-                h('p', { text: '记录、筛选并导出 TT-Toolkit 的结构化诊断事件。' }),
-            ),
-            h('label', { className: 'master-toggle' }, toggle, h('span', { text: view.enabled ? '记录中' : '已关闭' })),
+    });
+    root.append(h('header', { className: 'feature-header' },
+        h('div', {},
+            h('p', { className: 'eyebrow', text: '设置' }),
+            h('h2', { text: '日志' }),
+            h('p', { text: '记录、筛选并导出 TT-Toolkit 的结构化诊断事件。' }),
+        ),
+        h('label', { className: 'master-toggle' }, toggle, enabledStatus),
+    ));
+    const privacyWarning = slot(target.ownerDocument);
+    const warnings = slot(target.ownerDocument);
+    const notice = slot(target.ownerDocument);
+    const resultNotice = slot(target.ownerDocument);
+    const settings = createSettingsForm({
+        draft: view.draft,
+        maxMiB: view.maxMiB,
+        onEdit(patch, maxMiB = view.maxMiB) {
+            Object.assign(view.draft, patch);
+            view.maxMiB = maxMiB;
+            renderStatus();
+        },
+    });
+    function applySavedSettings() {
+        view.draft = structuredClone(runtime.state.settings);
+        view.maxMiB = view.draft.maxBytes / MIB;
+        settings.apply(view.draft, view.maxMiB);
+    }
+    const used = h('span');
+    const sessionCount = h('span');
+    const hostCapture = h('span', {}, '宿主 console 捕获：请在宿主设置中查看');
+    root.append(privacyWarning.anchor, warnings.anchor, notice.anchor, settings.element,
+        h('div', { className: 'log-summary' }, used, sessionCount, hostCapture),
+        h('div', { className: 'actions' },
+            actionButton('重置设置', () => { void run(async () => {
+                await runtime.resetSettings();
+                applySavedSettings();
+                notices.show('日志设置已重置。', 'success');
+            }); }, { className: 'secondary', dataset: { control: 'reset-settings' } }),
+            actionButton('保存设置', () => { void run(async () => {
+                await runtime.saveSettings({ ...view.draft, maxBytes: Math.round(view.maxMiB * MIB) });
+                applySavedSettings();
+                notices.show('日志设置已保存。隐私模式变化时已自动开启新会话。', 'success');
+            }); }, { className: 'primary', dataset: { control: 'save-settings' } }),
         ));
-        if (view.draft.privacyMode === 'full')
-            root.append(callout('完整模式会记录相关聊天正文、规则和 before/after，导出文件可能包含敏感内容。', 'danger'));
-        const hostStatus = runtime.state.hostFrontendStatus;
-        if (hostStatus?.phase === 'unavailable')
-            root.append(callout(`宿主前端日志不可用：${hostStatus.message}。日志功能无法启动，其它工具不受影响。`, 'danger'));
-        if (hostStatus?.phase === 'degraded')
-            root.append(callout(`宿主日志流已停止：${hostStatus.message || '运行期宿主日志契约错误'}。当前会话继续记录 TT-Toolkit 自身事件，不会自动重连；请关闭后重新启用日志。`, 'warning'));
-        if (runtime.state.configurationError)
-            root.append(callout(`日志设置损坏：${runtime.state.configurationError}`, 'danger'));
-        if (runtime.state.legacyLogsDetected)
-            root.append(callout('检测到旧版日志结构。旧日志不会被推断归类；请清空日志后重新启用记录。', 'danger'));
-        if (runtime.state.persistenceError)
-            root.append(callout(runtime.state.persistenceError, 'danger'));
-        if (runtime.state.hostConsoleCaptureError)
-            root.append(callout(`宿主 console 捕获状态未知：${runtime.state.hostConsoleCaptureError}`, 'warning'));
-        const notice = noticeBanner(notices.current, () => notices.clear(true));
-        if (notice)
-            root.append(notice);
-        root.append(settingsGrid());
-        const usedBytes = runtime.state.sessions.reduce((sum, session) => sum + session.bytes, 0);
-        const capture = runtime.state.hostConsoleCaptureEnabled;
-        root.append(h('div', { className: 'log-summary' },
-            h('span', { text: `已用 ${(usedBytes / MIB).toFixed(2)} / ${view.maxMiB} MiB` }),
-            h('span', { text: `${runtime.state.sessions.length} 个会话` }),
-            h('span', { text: `宿主 console 捕获：${capture === null ? '未知' : capture ? '开启' : '关闭'}` }),
-        ));
-        root.append(h('div', { className: 'actions' },
-            actionButton('重置设置', () => { void run(async () => { await runtime.resetSettings(); view.draft = structuredClone(runtime.state.settings); view.maxMiB = view.draft.maxBytes / MIB; notices.show('日志设置已重置。', 'success'); }); }, { className: 'secondary' }),
-            actionButton('保存设置', () => { void run(async () => { view.draft.maxBytes = Math.round(view.maxMiB * MIB); await runtime.saveSettings(structuredClone(view.draft)); view.draft = structuredClone(runtime.state.settings); notices.show('日志设置已保存。隐私模式变化时已自动开启新会话。', 'success'); }); }, { className: 'primary' }),
-        ));
-        root.append(h('hr'), toolbar());
-        root.append(h('div', { className: 'log-levels' }, LEVELS.map(level => {
-            const checkbox = h('input', { type: 'checkbox', checked: view.levels[level] });
-            checkbox.addEventListener('change', () => { view.levels[level] = checkbox.checked; view.page = 0; render(); });
+    const filters = toolbar();
+    const historyNotice = slot(target.ownerDocument);
+    const eventCount = h('span');
+    const pause = actionButton('', togglePause, { className: 'secondary', dataset: { control: 'pause' } });
+    root.append(h('hr'), filters.element,
+        h('div', { className: 'log-levels' }, LEVELS.map(level => {
+            const checkbox = h('input', { type: 'checkbox', checked: view.levels[level], dataset: { control: `level-${level}` } });
+            checkbox.addEventListener('change', () => { view.levels[level] = checkbox.checked; view.page = 0; renderViewer(); });
             return h('label', {}, checkbox, level);
-        })));
-        const selectedMeta = runtime.state.sessions.find(session => session.id === view.selectedSession);
-        root.append(h('div', { className: 'log-summary' },
-            selectedMeta
-                ? h('span', { text: `${selectedMeta.eventCount} 条事件 · ${(selectedMeta.bytes / 1024).toFixed(1)} KiB · 已淘汰 ${(selectedMeta.droppedBytes / 1024).toFixed(1)} KiB` })
-                : h('span', { text: `${filtered().length} 条匹配事件 · ${runtime.state.sessions.length} 个会话` }),
-            actionButton(view.paused ? '继续实时更新' : '暂停实时更新', togglePause, {
-                className: 'secondary',
-                disabled: !runtime.state.currentSessionId || (view.selectedSession && view.selectedSession !== runtime.state.currentSessionId),
-            }),
-        ));
-        const format = h('select', { dataset: { control: 'export-format' } },
-            option('log', 'LOG 文本', view.exportFormat === 'log'),
-            option('json', 'JSON', view.exportFormat === 'json'),
-        );
-        format.addEventListener('change', () => { view.exportFormat = format.value; view.completedAction = ''; render(); });
-        root.append(h('div', { className: 'actions log-actions' },
-            h('label', { className: 'log-export-format' }, '格式', format),
-            actionButton(completedLabel('export-filtered', '导出文件'), () => {
-                if (view.exporting)
-                    return;
-                const records = filtered();
-                const format = view.exportFormat;
-                view.exporting = true;
-                void run(async () => {
-                    try { await exportDownload(records, format, 'export-filtered'); }
-                    finally { view.exporting = false; }
-                }, { progress: `正在导出 ${format.toUpperCase()} 文件…` });
-            }, { className: 'secondary', disabled: view.exporting }),
-            actionButton(completedLabel('copy-filtered', '复制到剪贴板'), () => {
-                const records = filtered();
-                void run(() => exportCopy(records, view.exportFormat, 'copy-filtered'), { progress: `正在复制 ${view.exportFormat.toUpperCase()}…` });
-            }, { className: 'secondary' }),
-            actionButton('清空日志', () => {
-                void run(async () => {
-                    const confirmed = await confirmDanger(target.ownerDocument, {
-                        title: '清空日志',
-                        message: '将永久删除 TT-Toolkit 的全部日志会话，确定继续吗？',
-                        confirmLabel: '确认清空',
-                    });
-                    if (!confirmed)
-                        return;
-                    await runtime.clearLogs();
-                    view.selectedSession = runtime.state.currentSessionId ?? '';
-                    await reloadSession();
-                });
-            }, { className: 'danger-button' }),
-        ), logActionStatus());
-        root.append(...logList());
-        target.replaceChildren(root);
-        restoreFocus(target, snapshot);
+        })),
+        h('div', { className: 'log-summary' }, eventCount, pause), historyNotice.anchor,
+    );
+    const format = h('select', { dataset: { control: 'export-format' } },
+        option('log', 'LOG 文本', view.exportFormat === 'log'),
+        option('json', 'JSON', view.exportFormat === 'json'),
+    );
+    format.addEventListener('change', () => { view.exportFormat = format.value; view.completedAction = ''; renderNotices(); });
+    const exportButton = actionButton('', () => {
+        if (view.exporting)
+            return;
+        const format = view.exportFormat;
+        view.exporting = true;
+        void run(async () => {
+            try { await withExportRecords(records => exportDownload(records, format, 'export-filtered')); }
+            finally { view.exporting = false; }
+        }, { progress: `正在导出 ${format.toUpperCase()} 文件…` });
+    }, { className: 'secondary', dataset: { control: 'export-file' } });
+    const copyButton = actionButton('', () => {
+        const format = view.exportFormat;
+        void run(() => withExportRecords(records => exportCopy(records, format, 'copy-filtered')), { progress: `正在复制 ${format.toUpperCase()}…` });
+    }, { className: 'secondary', dataset: { control: 'copy' } });
+    const clearButton = actionButton('清空日志', () => {
+        void run(async () => {
+            const confirmed = await confirmDanger(target.ownerDocument, {
+                title: '清空日志',
+                message: '将永久删除 TT-Toolkit 的全部日志会话，确定继续吗？',
+                confirmLabel: '确认清空',
+            });
+            if (!confirmed)
+                return;
+            try { await runtime.clearLogs(); }
+            catch { throw new Error('清空日志未完成，请检查日志存储后重试。如提示空索引写入失败，请重新加载工具箱。'); }
+            view.selectedSession = runtime.state.currentSessionId ?? '';
+            await reloadSession();
+        });
+    }, { className: 'danger-button', dataset: { control: 'clear' } });
+    const logList = createLogList({
+        featureLabels,
+        onToggle(key) { view.expanded = view.expanded === key ? null : key; renderViewer(); },
+        onPrevious() { view.page -= 1; renderViewer(); },
+        onNext() { view.page += 1; renderViewer(); },
+    });
+    root.append(h('div', { className: 'actions log-actions' },
+        h('label', { className: 'log-export-format' }, '格式', format), exportButton, copyButton, clearButton,
+    ), resultNotice.anchor, ...logList.elements);
+
+    function renderStatus() {
+        const { sessions, hostFrontendStatus: hostStatus, configurationError, legacyLogsDetected, persistenceError } = runtime.state;
+        const issues = [
+            hostStatus?.phase === 'unavailable' && [`宿主前端日志不可用：${hostStatus.message}。日志功能无法启动，其它工具不受影响。`, 'danger'],
+            hostStatus?.phase === 'degraded' && [`宿主日志流已停止：${hostStatus.message || '运行期宿主日志契约错误'}。当前会话继续记录 TT-Toolkit 自身事件，不会自动重连；请关闭后重新启用日志。`, 'warning'],
+            configurationError && [`日志设置损坏：${configurationError}`, 'danger'],
+            legacyLogsDetected && ['检测到旧版日志结构。旧日志不会被推断归类；请清空日志后重新启用记录。', 'danger'],
+            persistenceError && [persistenceError, 'danger'],
+        ].filter(Boolean);
+        hasRuntimeIssues = issues.length > 0;
+        warnings.update(JSON.stringify(issues), () => issues.map(([message, kind]) => callout(message, kind)));
+        const full = view.draft.privacyMode === 'full';
+        privacyWarning.update(full, () => full ? [callout('完整模式会记录相关聊天正文、规则和 before/after，导出文件可能包含敏感内容。', 'danger')] : []);
+        setText(enabledStatus, view.enabled ? '记录中' : '已关闭');
+        const usedBytes = sessions.reduce((sum, session) => sum + session.bytes, 0);
+        setText(used, `已用 ${(usedBytes / MIB).toFixed(2)} / ${view.maxMiB} MiB`);
+        setText(sessionCount, `${sessions.length} 个会话`);
     }
 
-    const unsubscribe = runtime.subscribe(() => render());
-    render();
-    void run(async () => {
-        await reloadSession();
-        await runtime.refreshHostConsoleCaptureStatus();
+    function renderNotices() {
+        if (disposed)
+            return;
+        notice.update(notices.current, () => [noticeBanner(notices.current, () => notices.clear(true))]);
+        resultNotice.update(view.actionNotice, () => [logActionStatus()]);
+        setText(exportButton, completedLabel('export-filtered', '导出文件'));
+        setText(copyButton, completedLabel('copy-filtered', '复制到剪贴板'));
+        if (exportButton.disabled !== view.exporting)
+            exportButton.disabled = view.exporting;
+    }
+
+    function renderViewer() {
+        const { sessions, currentSessionId } = runtime.state;
+        const records = entries();
+        const results = filtered(records);
+        const issues = history.issues(selectedSessions());
+        const loading = selectedSessions().some(history.pending);
+        historyNotice.update(JSON.stringify([loading, issues]), () => [
+            loading ? callout('正在读取历史会话…', 'neutral') : null, ...historyWarnings(issues),
+        ]);
+        filters.updateSessions(sessions.map((session, index) => [session.id, `${sessionLabel(index)} · ${session.startedAt} · ${session.privacyMode}${session.interrupted ? ' · 中断' : ''}`]), view.selectedSession);
+        const sources = [...new Set(records.map(({ event }) => event.source))].sort();
+        filters.updateSources(sources.map(value => [value, value]), view.sourceFilter);
+        const selected = sessions.find(session => session.id === view.selectedSession);
+        const count = isMemorySession(runtime.state, selected) || (selected && issues.length)
+            ? `当前可读 ${records.length} / 共记录 ${selected.eventCount} 条` : `${selected?.eventCount} 条事件`;
+        setText(eventCount, selected
+            ? `${count} · ${(selected.bytes / 1024).toFixed(1)} KiB · 已淘汰 ${(selected.droppedBytes / 1024).toFixed(1)} KiB`
+            : `${results.length} 条匹配事件 · ${sessions.length} 个会话`);
+        setText(pause, view.paused ? '继续实时更新' : '暂停实时更新');
+        const disabled = !currentSessionId || Boolean(view.selectedSession && view.selectedSession !== currentSessionId);
+        if (pause.disabled !== disabled)
+            pause.disabled = disabled;
+        view.page = logList.update(results, view.page, view.expanded, loading ? '正在读取历史日志。' : hasRuntimeIssues || issues.length ? '暂无匹配的日志。' : '没有匹配的日志。');
+    }
+
+    function renderRuntime() {
+        if (disposed)
+            return;
+        renderStatus();
+        renderViewer();
+    }
+
+    function render() {
+        renderRuntime();
+        renderNotices();
+    }
+
+    let hasRuntimeIssues = false;
+    target.replaceChildren(root);
+    let stoppedSession = runtime.state.stoppedMemorySession;
+    const unsubscribe = runtime.subscribe(() => {
+        const stopped = runtime.state.stoppedMemorySession;
+        if (stopped !== stoppedSession) {
+            if (stoppedSession)
+                history.forget(stoppedSession.id);
+            stoppedSession = stopped;
+            if (stopped) {
+                view.paused = false;
+                view.pausedEntries = [];
+                if (selectedSessions().some(session => session.id === stopped.id))
+                    void history.load(stopped.id);
+            }
+        }
+        renderRuntime();
     });
+    render();
+    void run(reloadSession);
     return () => {
         disposed = true;
         notices.dispose();

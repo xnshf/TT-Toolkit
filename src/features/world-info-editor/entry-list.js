@@ -5,7 +5,9 @@ import { readEntryImageBindingSafe } from '../world-info-images/schema.js';
 export function summarizeEntries(entries) {
     const items = [];
     for (const [key, entry] of Object.entries(entries ?? {})) {
-        const uid = Number.isFinite(Number(key)) ? Number(key) : key;
+        // 异常条目的删除入口必须保留原键；例如 "03" 不能指向 "3"。
+        const numericKey = Number(key);
+        const uid = Number.isSafeInteger(numericKey) && String(numericKey) === key ? numericKey : key;
         try {
             const normalized = normalizeEntry(entry, typeof uid === 'number' ? uid : 0);
             const { binding, invalid } = readEntryImageBindingSafe(entry);
@@ -29,7 +31,7 @@ export function filterEntries(items, { query = '', filter = 'all', sort = 'order
             .some(value => String(value).toLowerCase().includes(needle))) return false;
         switch (filter) {
             case 'constant': return item.constant;
-            case 'active': return !item.disable;
+            case 'active': return !item.broken && !item.disable;
             case 'disabled': return item.disable;
             case 'depth': return item.position === 4;
             case 'image': return item.hasImage || item.imageInvalid;
@@ -48,23 +50,18 @@ export function filterEntries(items, { query = '', filter = 'all', sort = 'order
 }
 
 export function statsForEntries(entries) {
-    const list = Object.values(entries ?? {});
-    let imageCount = 0;
-    let imageTotalBytes = 0;
+    const list = summarizeEntries(entries);
+    const stats = { total: list.length, constant: 0, active: 0, disabled: 0, totalTokens: 0, imageCount: 0, imageTotalBytes: 0 };
     for (const entry of list) {
-        const { binding } = readEntryImageBindingSafe(entry);
-        if (binding) {
-            imageCount += 1;
-            imageTotalBytes += binding.sizeBytes;
+        if (entry.broken) continue;
+        if (entry.constant) stats.constant++;
+        if (entry.disable) stats.disabled++;
+        else stats.active++;
+        stats.totalTokens += estimateTokens(entry.content);
+        if (entry.imageBinding) {
+            stats.imageCount++;
+            stats.imageTotalBytes += entry.imageBinding.sizeBytes;
         }
     }
-    return {
-        total: list.length,
-        constant: list.filter(entry => entry.constant).length,
-        active: list.filter(entry => !entry.disable).length,
-        disabled: list.filter(entry => entry.disable).length,
-        totalTokens: list.reduce((total, entry) => total + estimateTokens(entry.content), 0),
-        imageCount,
-        imageTotalBytes,
-    };
+    return stats;
 }

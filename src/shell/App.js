@@ -1,5 +1,6 @@
 import { actionButton, bindScrollFade, h } from '../ui/dom.js';
 import { confirmDanger } from '../ui/confirm.js';
+import { captureFocus, restoreFocus } from '../ui/focus-keep.js';
 
 function taxonomy(features) {
     const categories = new Map();
@@ -63,10 +64,12 @@ export class ToolkitApp {
         );
         this.categoryNavigation = h('nav', { className: 'category-navigation', attrs: { 'aria-label': '功能大类' } });
         this.featureNavigation = h('nav', { className: 'feature-navigation', attrs: { 'aria-label': '当前大类功能' } });
-        this.main = h('main');
+        this.main = h('main', { attrs: { tabindex: '-1' } });
+        this.routeAnnouncement = h('p', { className: 'route-announcement', attrs: { 'aria-live': 'polite', 'aria-atomic': 'true' } });
         this.workbench = h('div', { className: 'workbench' },
             titlebar,
             this.layoutWarning,
+            this.routeAnnouncement,
             h('div', { className: 'workbench-body' },
                 this.categoryNavigation,
                 this.featureNavigation,
@@ -133,16 +136,19 @@ export class ToolkitApp {
     bindFrameDismiss() {
         const doc = this.target.ownerDocument;
         this.onKeyDown = event => {
-            if (event.key !== 'Escape' || doc.querySelector('dialog[open]'))
+            // Esc 在组合期间用于取消输入法候选；部分实现仅报告键码 229。
+            if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229 || doc.querySelector('dialog[open]'))
                 return;
             this.props.close();
         };
+        // 固定定位的工作台不撑开挂载点；露出的遮罩通常命中 iframe 的 body。
         this.onClickOutside = event => {
-            if (event.target === this.target)
-                this.props.close();
+            if (event.target?.nodeType !== 1 || this.workbench.contains(event.target) || doc.querySelector('dialog[open]'))
+                return;
+            this.props.close();
         };
         doc.addEventListener('keydown', this.onKeyDown);
-        this.target.addEventListener('click', this.onClickOutside);
+        doc.addEventListener('click', this.onClickOutside, true);
     }
 
     async navigate(route) {
@@ -152,15 +158,24 @@ export class ToolkitApp {
         // 被用户拒绝时保持当前路由与 DOM 原样，草稿不被丢弃。
         if (!await this.requestLeave())
             return;
+        const focusContent = this.main.contains(this.target.ownerDocument.activeElement);
         this.leaveGuard = null;
         this.route = route;
         this.renderNavigation();
         const persistRoute = this.props.setRoute(route);
-        await this.renderMain();
+        const rendering = this.renderMain();
+        // 总览卡片随内容移除；两级导航则保留在原层级，继续用 Tab 浏览。
+        if (focusContent)
+            this.main.focus({ preventScroll: true });
+        const label = this.main.getAttribute('aria-label');
+        this.routeAnnouncement.textContent = !focusContent && label ? `已打开：${label}` : '';
+        await rendering;
         await persistRoute;
     }
 
     renderNavigation() {
+        const categoryFocus = captureFocus(this.categoryNavigation);
+        const featureFocus = captureFocus(this.featureNavigation);
         const categories = taxonomy(this.props.features);
         const activeFeature = this.props.features.find(feature => feature.id === this.route);
         const activeCategory = activeFeature
@@ -170,14 +185,17 @@ export class ToolkitApp {
 
         const overview = actionButton('总览', () => { void this.navigate('overview'); }, {
             className: this.route === 'overview' ? 'overview-link active' : 'overview-link',
-            dataset: { route: 'overview' },
+            dataset: { route: 'overview', control: 'overview' },
             attrs: this.route === 'overview' ? { 'aria-current': 'page' } : {},
         });
         const categoryButtons = categories.map(category => {
             const active = activeCategory?.id === category.id;
-            return actionButton(category.label, () => { void this.navigate(category.features[0].id); }, {
+            return actionButton(category.label, () => {
+                if (!active)
+                    void this.navigate(category.features[0].id);
+            }, {
                 className: active ? 'active' : '',
-                dataset: { categoryId: category.id },
+                dataset: { categoryId: category.id, control: `category:${category.id}` },
                 attrs: active ? { 'aria-current': 'page' } : {},
             });
         });
@@ -187,7 +205,7 @@ export class ToolkitApp {
             const active = this.route === feature.id;
             const button = actionButton('', () => { void this.navigate(feature.id); }, {
                 className: active ? 'active' : '',
-                dataset: { featureId: feature.id },
+                dataset: { featureId: feature.id, control: feature.id },
                 attrs: active ? { 'aria-current': 'page' } : {},
             });
             button.replaceChildren(
@@ -201,6 +219,12 @@ export class ToolkitApp {
             ...(activeCategory ? [h('h2', { text: '功能' })] : []),
             ...featureButtons,
         );
+        restoreFocus(this.categoryNavigation, categoryFocus);
+        if (featureFocus && !restoreFocus(this.featureNavigation, featureFocus)) {
+            restoreFocus(this.categoryNavigation, {
+                key: activeCategory ? `category:${activeCategory.id}` : 'overview',
+            });
+        }
         this.updateCategoryFade?.();
         this.updateFeatureFade?.();
     }
@@ -212,6 +236,7 @@ export class ToolkitApp {
         this.disposeFeature?.();
         this.disposeFeature = null;
         if (this.route === 'overview') {
+            this.main.setAttribute('aria-label', '工具总览');
             const categorySections = taxonomy(this.props.features).map(category => h('section', { className: 'overview-category' },
                 h('h2', { text: category.label }),
                 h('div', { className: 'feature-cards' }, category.features.map(feature => {
@@ -237,9 +262,11 @@ export class ToolkitApp {
         }
         const feature = this.props.features.find(item => item.id === this.route);
         if (!feature) {
+            this.main.removeAttribute('aria-label');
             this.main.replaceChildren();
             return;
         }
+        this.main.setAttribute('aria-label', feature.label);
         this.main.replaceChildren(h('div', { className: 'callout', text: '正在加载功能……' }));
         try {
             const dispose = await feature.mount(this.main, {
@@ -277,7 +304,7 @@ export class ToolkitApp {
         this.disposeFeature?.();
         const doc = this.target.ownerDocument;
         doc.removeEventListener('keydown', this.onKeyDown);
-        this.target.removeEventListener('click', this.onClickOutside);
+        doc.removeEventListener('click', this.onClickOutside, true);
         this.target.replaceChildren();
     }
 }

@@ -5,19 +5,7 @@ const REFLUX_PREFIX_PATTERN = /^\[TT-Toolkit\]\[[^\]\n]+\]\[[^\]\n]+\]\[[^\]\n]+
 
 // 宿主前端日志：能力探测、尾部与实时缓冲合并、按运行期 id 去重、契约失败降级。
 // 宿主来源事件不转发 console，避免回流；降级后不自动重连。
-// 读取宿主 console 捕获状态；失败时只保留脱敏错误文案，不改变宿主设置。
-export async function readHostConsoleCapture(logger) {
-    try {
-        logger.mutable.hostConsoleCaptureEnabled = await logger.host.getHostConsoleCaptureEnabled();
-        logger.mutable.hostConsoleCaptureError = '';
-    }
-    catch (error) {
-        logger.mutable.hostConsoleCaptureEnabled = null;
-        logger.mutable.hostConsoleCaptureError = errorMessage(error);
-    }
-}
-
-export async function probeHostFrontendLogs(logger) {
+export function probeHostFrontendLogs(logger) {
     try {
         logger.host.assertFrontendLogsCapability();
         logger.mutable.hostFrontendStatus = { phase: 'idle', code: '', message: '', importedCount: 0 };
@@ -29,9 +17,6 @@ export async function probeHostFrontendLogs(logger) {
             message: errorMessage(error),
             importedCount: 0,
         };
-    }
-    if (logger.mutable.hostFrontendStatus.phase !== 'unavailable') {
-        await readHostConsoleCapture(logger);
     }
 }
 
@@ -76,8 +61,12 @@ export function degradeHostStream(logger, error) {
         message: errorMessage(error),
         importedCount: logger.mutable.hostFrontendStatus.importedCount ?? 0,
     };
-    logger.record('error', 'system', 'logger', 'host.stream_contract_failed', {
-        data: { operation: 'host.stream.contract', ...errorKind(error) },
+    logger.record('warn', 'system', 'logger', 'host.stream_contract_failed', {
+        data: {
+            operation: 'host.stream.contract', ...errorKind(error),
+            sourceLocation: 'kernel/host-store.js:validateFrontendLogEntry',
+            outcome: 'host-stream-stopped', nextAction: 'disable-and-reenable-logs-to-retry',
+        },
     });
     logger.notify();
 }

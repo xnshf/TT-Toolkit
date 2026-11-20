@@ -106,6 +106,51 @@ describe('WorldInfoEditorPage', () => {
     });
 
 
+    it('keeps the editor usable and deletes only confirmed malformed rows', async () => {
+        const target = document.createElement('div');
+        const host = createMockHost();
+        const healthy = structuredClone(host._store.MyLore.entries);
+        const malformed = JSON.parse('{"0":null,"3":"broken","03":["broken"]}');
+        Object.assign(host._store.MyLore.entries, malformed);
+        const runtime = new WorldInfoEditorRuntime(host);
+        const unmount = mountWorldInfoEditorPage(target, { runtime, enabled: true, setEnabled: vi.fn() });
+        try {
+            const stats = () => target.querySelector('.wie-global-stats')?.textContent;
+            await vi.waitFor(() => expect(stats()).toContain('共 5 条目'));
+            expect(stats()).toContain('1 常驻');
+            expect(target.querySelectorAll('.wie-card-broken')).toHaveLength(3);
+
+            target.querySelector('.wie-card[data-uid="1"]').click();
+            await vi.waitFor(() => expect(target.querySelector('input[aria-label="标题 / 注释"]')?.value).toBe(healthy[1].comment));
+
+            const askToDelete = uid => {
+                const row = target.querySelector(`.wie-card-broken[data-uid="${uid}"]`);
+                expect(row?.textContent).toContain('结构异常');
+                row.querySelector('button').click();
+                const dialog = document.querySelector('dialog.ttk-confirm[open]');
+                expect(dialog?.textContent).toContain(`#${uid}`);
+                return dialog;
+            };
+            askToDelete('0').querySelector('button').click();
+            expect(host.saveWorldInfo).not.toHaveBeenCalled();
+
+            // “03” 与 “3” 都存在；确认前者不得误删后者。
+            const remaining = { ...healthy, ...malformed };
+            for (const uid of ['0', '03', '3']) {
+                askToDelete(uid).querySelector('.danger-button').click();
+                delete remaining[uid];
+                await vi.waitFor(() => expect(stats()).toContain(`共 ${Object.keys(remaining).length} 条目`));
+                expect(host._store.MyLore.entries).toEqual(remaining);
+            }
+            expect(target.querySelectorAll('.wie-card')).toHaveLength(2);
+            expect(target.querySelectorAll('.wie-card-broken')).toHaveLength(0);
+        }
+        finally {
+            document.querySelector('dialog.ttk-confirm')?.remove();
+            unmount();
+        }
+    });
+
     it('rejects empty or out-of-range numbers instead of writing 0', async () => {
         const target = document.createElement('div');
         document.body.append(target);
@@ -174,6 +219,75 @@ describe('WorldInfoEditorPage', () => {
         finally { dispose(); target.remove(); }
     });
 
+    it('expires a notice without replacing a focused trigger-word input or losing its pending word', async () => {
+        const target = document.body.appendChild(document.createElement('div'));
+        const host = createMockHost();
+        host.globalGet.mockRejectedValueOnce(new Error('读取设置失败'));
+        const runtime = new WorldInfoEditorRuntime(host);
+        const dispose = mountWorldInfoEditorPage(target, { runtime, enabled: true, setEnabled: vi.fn() });
+        try {
+            await vi.waitFor(() => expect(target.querySelectorAll('.wie-card')).toHaveLength(2));
+            vi.useFakeTimers();
+            [...target.querySelectorAll('button')].find(button => button.textContent === '重置世界书管理设置').click();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(target.querySelector('.feature-notice')?.textContent).toContain('世界书管理设置已重置');
+
+            const tag = target.querySelector('[aria-label="添加主要触发词"]');
+            tag.focus();
+            tag.value = '未成块的誓词';
+            tag.setSelectionRange(2, 4);
+            await vi.advanceTimersByTimeAsync(4500);
+
+            expect(target.querySelector('.feature-notice')).toBeNull();
+            expect(target.querySelector('[aria-label="添加主要触发词"]')).toBe(tag);
+            expect(document.activeElement).toBe(tag);
+            expect(tag.value).toBe('未成块的誓词');
+            expect([tag.selectionStart, tag.selectionEnd]).toEqual([2, 4]);
+            expect(runtime.state.currentDraft.key).not.toContain('未成块的誓词');
+            tag.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            expect(runtime.state.currentDraft.key).toContain('未成块的誓词');
+        }
+        finally { dispose(); vi.useRealTimers(); target.remove(); }
+    });
+
+    it('reports an async settings failure during editing without replacing the editor, but still disables explicitly', async () => {
+        const target = document.body.appendChild(document.createElement('div'));
+        const host = createMockHost();
+        const runtime = new WorldInfoEditorRuntime(host);
+        const write = Promise.withResolvers();
+        const disable = Promise.withResolvers();
+        host.globalSet.mockReturnValueOnce(write.promise);
+        const setEnabled = vi.fn(() => disable.promise);
+        const dispose = mountWorldInfoEditorPage(target, { runtime, enabled: true, setEnabled });
+        try {
+            await vi.waitFor(() => expect(target.querySelectorAll('.wie-card')).toHaveLength(2));
+            const checkbox = target.querySelector('.wie-save-option input');
+            checkbox.click();
+            expect(checkbox.checked).toBe(false);
+
+            const textarea = target.querySelector('.wie-textarea');
+            textarea.focus();
+            textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+            textarea.setSelectionRange(1, 3);
+            write.reject(new Error('本次没有写入设置'));
+            await vi.waitFor(() => expect(target.querySelector('.feature-notice')?.textContent).toContain('本次没有写入设置'));
+            expect(target.querySelector('.wie-textarea')).toBe(textarea);
+            expect(document.activeElement).toBe(textarea);
+            expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([1, 3]);
+            expect(target.querySelector('.wie-save-option input').checked).toBe(true);
+            textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+
+            const toggle = target.querySelector('.master-toggle input');
+            toggle.click();
+            textarea.focus(); // Editing can resume before the disable operation finishes.
+            disable.resolve();
+            await vi.waitFor(() => expect(target.textContent).toContain('功能尚未启用'));
+            expect(setEnabled).toHaveBeenCalledWith(false);
+            expect(target.querySelector('.wie-textarea')).toBeNull();
+        }
+        finally { dispose(); target.remove(); }
+    });
+
     it('switches active entry when clicking cards in list', async () => {
         const target = document.createElement('div');
         const host = createMockHost();
@@ -217,7 +331,10 @@ describe('WorldInfoEditorPage', () => {
         finally { unmount(); }
     });
 
-    it('wraps the textarea selection with paired macros and inserts the rest at the caret', async () => {
+    it.each([
+        ['inline', '.wie-editor-wrap', '.wie-textarea'],
+        ['fullscreen', '.wie-zen-overlay', '.wie-zen-textarea'],
+    ])('preserves focus and selection when activating macros in the %s editor', async (mode, containerSelector, textareaSelector) => {
         const target = document.createElement('div');
         document.body.append(target);
         const host = createMockHost();
@@ -225,19 +342,24 @@ describe('WorldInfoEditorPage', () => {
         const unmount = mountWorldInfoEditorPage(target, { runtime, enabled: true, setEnabled: vi.fn() });
         try {
             await vi.waitFor(() => expect(target.querySelectorAll('.wie-card')).toHaveLength(2));
-            const textarea = target.querySelector('.wie-textarea');
-            // 真实路径：用户先点进正文，再点宏按键。
+            if (mode === 'fullscreen')
+                [...target.querySelectorAll('button')].find(button => button.textContent.includes('全屏写作')).click();
+            const textarea = target.querySelector(textareaSelector);
             textarea.focus();
-            const macroKeys = [...target.querySelectorAll('.wie-macro-key')];
+            const macroKeys = [...target.querySelector(containerSelector).querySelectorAll('.wie-macro-key')];
             expect(macroKeys.map(key => key.textContent)).toEqual([
                 '{{char}}', '{{user}}', '[[', ']]', '*动作*', '"对话"',
             ]);
 
             // 有选区时成对宏包裹选区，不冲掉原文，并保留选中。
             textarea.value = '骑士团誓言';
-            textarea.selectionStart = 0;
-            textarea.selectionEnd = 3;
+            textarea.setSelectionRange(0, 3);
+            // Tab 等操作可先聚焦宏键；happy-dom 的 click() 不会自己迁移焦点。
+            macroKeys[2].focus();
+            expect(document.activeElement).toBe(macroKeys[2]);
             macroKeys[2].click();
+            expect(target.querySelector(textareaSelector)).toBe(textarea);
+            expect(document.activeElement).toBe(textarea);
             expect(textarea.value).toBe('[[骑士团]]誓言');
             expect(textarea.selectionStart).toBe(2);
             expect(textarea.selectionEnd).toBe(5);
@@ -245,12 +367,13 @@ describe('WorldInfoEditorPage', () => {
 
             // 无选区时按光标位置插入，并保留焦点。
             textarea.value = '正文';
-            textarea.selectionStart = 2;
-            textarea.selectionEnd = 2;
+            textarea.setSelectionRange(2, 2);
             macroKeys[0].click();
             expect(textarea.value).toBe('正文{{char}}');
+            expect(textarea.selectionStart).toBe(textarea.value.length);
+            expect(textarea.selectionEnd).toBe(textarea.value.length);
             expect(document.activeElement).toBe(textarea);
-            expect(target.querySelector('.wie-textarea')).toBe(textarea);
+            expect(target.querySelector(textareaSelector)).toBe(textarea);
             expect(runtime.state.currentDraft.content).toBe('正文{{char}}');
         }
         finally { unmount(); target.remove(); }

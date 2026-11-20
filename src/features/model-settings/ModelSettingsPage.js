@@ -178,19 +178,26 @@ export function mountModelSettingsPage(target, props) {
             root.append(callout(view.notice, view.noticeKind));
         if (runtime.state.status)
             root.append(callout(runtime.state.status));
+        const { busy, loaded, damaged } = runtime.state;
+        const canEdit = loaded && !busy;
+        const canReset = (loaded || damaged) && !busy;
         root.append(h('div', { className: 'actions model-settings-actions' },
-            actionButton('添加预设', addPreset, { className: 'secondary', disabled: runtime.state.busy || runtime.state.damaged }),
+            !loaded ? actionButton(busy ? '处理中…' : '重新加载', () => {
+                view.confirmingReset = false;
+                void runtime.load();
+            }, { className: 'secondary', disabled: busy }) : null,
+            actionButton('添加预设', addPreset, { className: 'secondary', disabled: !canEdit }),
             actionButton('保存模型预设', () => {
                 void run(async () => {
                     runtime.protectDraft(view.draft);
                     await runtime.save(structuredClone(view.draft));
                     view.draft = structuredClone(runtime.state.settings);
                 });
-            }, { className: 'primary', disabled: runtime.state.busy || runtime.state.damaged }),
-            actionButton(runtime.state.damaged ? '重置损坏的模型预设' : '重置模型预设', () => {
+            }, { className: 'primary', disabled: !canEdit }),
+            actionButton(damaged ? '重置损坏的模型预设' : '重置模型预设', () => {
                 view.confirmingReset = true;
                 render();
-            }, { className: 'secondary', disabled: runtime.state.busy }),
+            }, { className: 'secondary', disabled: !canReset }),
         ));
         if (view.confirmingReset) {
             root.append(callout('重置将清除所有模型预设及访问密钥，不影响聊天或其它设置。插件不保留备份，无法撤销；需要保留时请先自行备份。', 'warning'));
@@ -203,26 +210,25 @@ export function mountModelSettingsPage(target, props) {
                         view.revealed.clear();
                         view.confirmingReset = false;
                     });
-                }, { className: 'primary', disabled: runtime.state.busy }),
+                }, { className: 'primary', disabled: !canReset }),
                 actionButton('取消重置', () => { view.confirmingReset = false; render(); }, { className: 'secondary', disabled: runtime.state.busy }),
             ));
         }
-        root.append(h('div', { className: 'model-presets' }, view.draft.presets.map(renderPreset)));
-        if (!view.draft.presets.length)
-            root.append(callout('尚无模型预设。添加并保存匹配功能协议的预设后即可使用模型服务。'));
+        if (loaded) {
+            root.append(h('div', { className: 'model-presets' }, view.draft.presets.map(renderPreset)));
+            if (!view.draft.presets.length)
+                root.append(callout('尚无模型预设。添加并保存匹配功能协议的预设后即可使用模型服务。'));
+        }
         target.replaceChildren(root);
     }
 
     const unsubscribe = runtime.subscribe(() => {
-        if (!runtime.state.busy && !runtime.state.error)
+        if (!runtime.state.busy && runtime.state.loaded && !runtime.state.error)
             view.draft = structuredClone(runtime.state.settings);
         render();
     });
     render();
-    void runtime.load().then(() => {
-        view.draft = structuredClone(runtime.state.settings);
-        render();
-    });
+    void runtime.load();
     return () => {
         disposed = true;
         unsubscribe();

@@ -1,13 +1,16 @@
 import { ToolkitError } from './errors.js';
 import { OPENAI_URL, PROMPT_CONFLICT_CHAT_NAMESPACE, PROMPT_CONFLICT_INVALIDATION_EVENTS, PROMPT_VIEWER_AGENT_ONLY_IDENTIFIERS, PROMPT_VIEWER_TEXTAREA_ID, dynamicImport } from './host-abi.js';
 
+// Each host assembly creates a new chat array. Keep metadata off the wire and scoped to that array.
+const worldInfoImagesByChat = new WeakMap();
+
 // promptMethods: 由 host.js 按宿主能力拆分，方法体与拆分前一致。
 export const promptMethods = {
     async getPromptConflictChatMetadata() {
         return this.chatExtensionGet(PROMPT_CONFLICT_CHAT_NAMESPACE);
     },
-    async setPromptConflictChatMetadata(expectedStableId, value) {
-        await this.chatExtensionSet(expectedStableId, PROMPT_CONFLICT_CHAT_NAMESPACE, value);
+    async setPromptConflictChatMetadata(expectedStableId, value, expectedRef) {
+        return this.chatExtensionSet(expectedStableId, PROMPT_CONFLICT_CHAT_NAMESPACE, value, { expectedRef });
     },
     async openAiPromptManager() {
         if (!this.openAiModule) {
@@ -162,7 +165,7 @@ export const promptMethods = {
             reasoningContent: message?.reasoningContent ? String(message.reasoningContent) : null,
         };
     },
-    async readPromptViewerSnapshot({ dryRun = false } = {}) {
+    async readPromptViewerSnapshot({ chat } = {}) {
         const promptManager = await this.openAiPromptManager();
         const collection = promptManager?.messages;
         if (!collection || typeof collection.flatten !== 'function') {
@@ -185,20 +188,31 @@ export const promptMethods = {
             nameCache.set(identifier, name);
             return name;
         };
-        const projected = collection.flatten().map(message => this.projectPromptViewerMessage(message, promptName));
-        const messages = projected.filter(message => !PROMPT_VIEWER_AGENT_ONLY_IDENTIFIERS.has(message.identifier));
-        const injected = this.consumeWorldInfoInjectedPromptMessages?.({ dryRun }) ?? [];
-        if (injected.length) {
-            for (const item of injected) {
-                const index = Number.isInteger(item.insertIndex) && item.insertIndex >= 0 && item.insertIndex <= messages.length
-                    ? item.insertIndex
-                    : messages.length;
-                messages.splice(index, 0, this.projectPromptViewerMessage(item, () => item.promptName ?? null));
+        const flattened = collection.flatten();
+        const projected = flattened.map(message => this.projectPromptViewerMessage(message, promptName));
+        const metadata = worldInfoImagesByChat.get(chat);
+        if (metadata) {
+            // getChat() omits empty placeholders. Use only sent entries as position anchors.
+            const sentIndexes = [];
+            for (const [index, message] of flattened.entries()) {
+                if (message.agentMessage || message.content || message.tool_calls || message.role === 'tool')
+                    sentIndexes.push(index);
+            }
+            let inserted = 0;
+            for (const [index, chatMessage] of chat.entries()) {
+                const image = metadata.get(chatMessage);
+                if (!image)
+                    continue;
+                const following = sentIndexes[index - inserted];
+                const position = following === undefined ? projected.length : following + inserted;
+                projected.splice(position, 0, this.projectPromptViewerMessage({ ...image, ...chatMessage }, () => image.promptName));
+                inserted += 1;
             }
         }
+        const messages = projected.filter(message => !PROMPT_VIEWER_AGENT_ONLY_IDENTIFIERS.has(message.identifier));
         return {
             messages,
-            removedAgentItemCount: projected.length - (messages.length - injected.length),
+            removedAgentItemCount: projected.length - messages.length,
             squashSystemMessages: Boolean(promptManager.serviceSettings?.squash_system_messages),
         };
     },
@@ -210,6 +224,13 @@ export const promptMethods = {
         const textarea = document.getElementById(PROMPT_VIEWER_TEXTAREA_ID);
         if (!textarea || typeof textarea.value !== 'string') {
             throw new ToolkitError('PROMPT_VIEWER_INPUT_UNAVAILABLE', '找不到宿主输入框，无法进行预测。');
+        }
+        // Check after the lazy import, before mutating host input or token counts.
+        const pending = Symbol();
+        if (this.isGenerationInProgress()
+            || await Promise.race([this.generationIdlePromise(), Promise.resolve(pending)]) === pending
+            || this.isGenerationInProgress()) {
+            throw new ToolkitError('PROMPT_VIEWER_BUSY', '宿主正在生成或收尾，暂时不能预测。');
         }
         const savedValue = textarea.value;
         const savedStart = textarea.selectionStart;
@@ -245,7 +266,21 @@ export const promptMethods = {
             disposers.push(this.onHostEvent(name, handler));
         };
         add('GENERATION_AFTER_COMMANDS', (type, _options, dryRun) => {
-            handlers.onGenerationStart?.({ type: String(type ?? ''), dryRun: dryRun === true });
+            const round = handlers.onGenerationStart?.({ type: String(type ?? ''), dryRun: dryRun === true });
+            if (dryRun === true || !round)
+                return;
+            // Generate() awaits this event. Only report idle from a detached continuation.
+            const settled = async () => {
+                try {
+                    await this.generationIdlePromise();
+                }
+                catch {
+                    // No idle evidence; retain event-driven cleanup for the read-only snapshot.
+                    return;
+                }
+                handlers.onGenerationSettled?.(round);
+            };
+            void settled();
         });
         add('CHAT_COMPLETION_PROMPT_READY', payload => {
             if (!payload || typeof payload !== 'object' || !Array.isArray(payload.chat) || typeof payload.dryRun !== 'boolean') {
@@ -316,21 +351,7 @@ export const promptMethods = {
             attachedCount,
         };
     },
-    recordWorldInfoInjectedPromptMessages(messages, { dryRun = false } = {}) {
-        const items = Array.isArray(messages) ? structuredClone(messages) : [];
-        if (dryRun)
-            this.lastDryRunInjectedWorldInfoImages = items;
-        else
-            this.lastSentInjectedWorldInfoImages = items;
-    },
-    consumeWorldInfoInjectedPromptMessages({ dryRun = false } = {}) {
-        if (dryRun) {
-            const items = this.lastDryRunInjectedWorldInfoImages ?? [];
-            this.lastDryRunInjectedWorldInfoImages = [];
-            return items;
-        }
-        const items = this.lastSentInjectedWorldInfoImages ?? [];
-        this.lastSentInjectedWorldInfoImages = [];
-        return items;
+    recordWorldInfoInjectedPromptMessages(chat, messages) {
+        worldInfoImagesByChat.set(chat, new Map(messages.map(({ chatMessage, ...metadata }) => [chatMessage, metadata])));
     }
 };

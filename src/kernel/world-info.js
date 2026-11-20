@@ -1,6 +1,22 @@
 import { ToolkitError } from './errors.js';
 
 export const WORLD_INFO_LORE_LISTS = Object.freeze(['globalLore', 'characterLore', 'chatLore', 'personaLore']);
+export const WORLD_INFO_SNAPSHOT_INCOMPLETE = 'WORLD_INFO_SNAPSHOT_INCOMPLETE';
+
+// Snapshot errors can name books in the UI; the logging boundary carries only counts.
+export function worldInfoSnapshotFailureData(error) {
+    if (!(error instanceof ToolkitError) || error.code !== WORLD_INFO_SNAPSHOT_INCOMPLETE)
+        return null;
+    const { uncachedCount, unreadableCount } = error.context;
+    return {
+        code: WORLD_INFO_SNAPSHOT_INCOMPLETE,
+        phase: 'mounted-world-info-read',
+        sourceLocation: 'kernel/host-world-info.js:getMountedWorldInfoEntries',
+        uncachedCount: Number.isSafeInteger(uncachedCount) ? uncachedCount : 0,
+        unreadableCount: Number.isSafeInteger(unreadableCount) ? unreadableCount : 0,
+        nextAction: 'open_books_in_host_then_retry',
+    };
+}
 const VALUE_TYPES = new Set(['undefined', 'null', 'array', 'object', 'string', 'number', 'boolean', 'bigint', 'symbol', 'function']);
 
 // Only boundary-generated, whitelisted diagnostics may enter redacted logs.

@@ -14,13 +14,17 @@ export function createEntryCards({ runtime, view, target, runNavigating }) {
     function renderBrokenEntryCard(entry) {
         const removeBtn = actionButton('删除', () => {
             void runNavigating(async () => {
+                const confirmedTarget = {
+                    world: runtime.state.selectedWorld,
+                    value: runtime.state.worldData?.entries?.[entry.uid],
+                };
                 const confirmed = await confirmDanger(target.ownerDocument, {
                     title: `确认删除结构异常的条目 #${entry.uid}`,
-                    message: '该条目不是普通对象，编辑器不会改写它；删除会把它从世界书文件中移除。',
+                    message: '只会从世界书文件中移除这一条。删除无法撤销，如需保留原数据，请先自行备份世界书。',
                     confirmLabel: '删除条目',
                 });
                 if (confirmed)
-                    await runtime.deleteEntry(entry.uid);
+                    await runtime.deleteEntry(entry.uid, { confirmedTarget });
             });
         }, { className: 'danger-button' });
         return h('article', { className: 'wie-card wie-card-broken', dataset: { uid: String(entry.uid) } },

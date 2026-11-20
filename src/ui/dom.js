@@ -40,13 +40,29 @@ export function actionButton(text, onClick, options = {}) {
     return h('button', { type: 'button', text, on: { click: onClick }, ...options });
 }
 
-// 统一分页条：页码显示与首/末页禁用逻辑集中一处，页面只提供换页回调。
+// 统一分页条：实时视图可以更新页码而不更换按钮。
+export function createPagerBar({ onPrevious, onNext }) {
+    const previous = actionButton('上一页', onPrevious);
+    const next = actionButton('下一页', onNext);
+    const label = h('span');
+    return {
+        element: h('div', { className: 'pager' }, previous, label, next),
+        update(page, pageCount) {
+            const text = `${page + 1} / ${pageCount}`;
+            if (label.textContent !== text)
+                label.textContent = text;
+            if (previous.disabled !== (page === 0))
+                previous.disabled = page === 0;
+            if (next.disabled !== (page + 1 >= pageCount))
+                next.disabled = page + 1 >= pageCount;
+        },
+    };
+}
+
 export function pagerBar({ page, pageCount, onPrevious, onNext }) {
-    return h('div', { className: 'pager' },
-        actionButton('上一页', onPrevious, { disabled: page === 0 }),
-        h('span', { text: `${page + 1} / ${pageCount}` }),
-        actionButton('下一页', onNext, { disabled: page + 1 >= pageCount }),
-    );
+    const pager = createPagerBar({ onPrevious, onNext });
+    pager.update(page, pageCount);
+    return pager.element;
 }
 
 // 横向滚动容器两端的渐隐提示:滚动未到端点时对应侧出现渐隐。

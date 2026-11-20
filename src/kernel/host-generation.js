@@ -6,11 +6,19 @@ import { REGEX_URL, dynamicImport } from './host-abi.js';
 export const generationMethods = {
     isGenerationInProgress() {
         if (typeof this.scriptModule?.isGenerating !== 'function')
-            throw new ToolkitError('HOST_GENERATION_STATUS_MISSING', '宿主生成状态接口不可用，请检查宿主版本后再测试。');
+            throw new ToolkitError('HOST_GENERATION_STATUS_MISSING', '宿主生成状态接口不可用，请检查宿主版本后重试。');
         const result = this.scriptModule.isGenerating();
         if (typeof result !== 'boolean')
-            throw new ToolkitError('HOST_GENERATION_STATUS_INVALID', '宿主生成状态无效，条件测试未开始。');
+            throw new ToolkitError('HOST_GENERATION_STATUS_INVALID', '宿主生成状态无效，已停止当前操作。');
         return result;
+    },
+    generationIdlePromise() {
+        if (typeof this.scriptModule?.waitForGenerationIdle !== 'function')
+            throw new ToolkitError('HOST_GENERATION_IDLE_UNAVAILABLE', '宿主未提供生成收尾状态，请检查宿主版本后重试。');
+        const idle = this.scriptModule.waitForGenerationIdle();
+        if (typeof idle?.then !== 'function')
+            throw new ToolkitError('HOST_GENERATION_IDLE_UNAVAILABLE', '宿主生成收尾状态无效，请检查宿主版本后重试。');
+        return idle;
     },
     generationWillRequestModel() {
         const context = this.context;
@@ -20,18 +28,31 @@ export const generationMethods = {
             return false;
         return true;
     },
-    onHostEvent(name, handler) {
+    onHostEvent(name, handler, { first = false } = {}) {
         const context = this.context;
         const event = context.eventTypes?.[name];
-        if (!event || typeof context.eventSource?.on !== 'function')
-            throw new ToolkitError('HOST_EVENT_MISSING', `TauriTavern 缺少 ${name} 事件。`);
-        context.eventSource.on(event, handler);
-        const remove = typeof context.eventSource.off === 'function'
-            ? context.eventSource.off.bind(context.eventSource)
-            : context.eventSource.removeListener?.bind(context.eventSource);
-        if (!remove)
+        const source = context.eventSource;
+        const register = first ? source?.makeFirst : source?.on;
+        if (!event || typeof register !== 'function')
+            throw new ToolkitError('HOST_EVENT_MISSING', `TauriTavern 缺少 ${name} ${first ? '的首位监听接口' : '事件'}。`);
+        const remove = typeof source.off === 'function' ? source.off : source.removeListener;
+        if (typeof remove !== 'function')
             throw new ToolkitError('HOST_EVENT_MISSING', 'TauriTavern 缺少事件移除方法。');
-        return () => remove(event, handler);
+        const dispose = () => remove.call(source, event, handler);
+        try {
+            register.call(source, event, handler);
+        }
+        catch (error) {
+            // The host can call a replay listener after adding it, before registration returns.
+            try {
+                dispose();
+            }
+            catch {
+                // Preserve the registration failure.
+            }
+            throw error;
+        }
+        return dispose;
     },
     async emitHostEvent(name, ...args) {
         const context = this.context;

@@ -161,14 +161,6 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
             scheduleScroll(textarea);
         });
 
-        // 宏按键与全屏写作共用一套宏；有选区时包裹选区而不是冲掉原文。
-        const applyMacro = (value, selection) => {
-            textarea.value = value;
-            runtime.updateDraftField('content', value);
-            textarea.focus();
-            textarea.setSelectionRange(selection.start, selection.end);
-        };
-
         const editorWrap = h('div', { className: 'wie-editor-wrap' },
             h('div', { className: 'wie-editor-toolbar' },
                 h('div', { className: 'wie-editor-count', text: `字数: ${draft.content.length} · 预估 Token: ${estimateTokens(draft.content)}` }),
@@ -179,7 +171,7 @@ export function createDetailForm({ runtime, view, render, saveManually, schedule
                     }, { className: 'secondary' }),
                 ),
             ),
-            renderMacroBar(textarea, applyMacro),
+            renderMacroBar(textarea),
             textarea,
         );
 

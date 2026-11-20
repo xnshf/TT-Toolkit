@@ -1,7 +1,7 @@
 import { ToolkitError } from './errors.js';
 import { sha256Hex } from './hash.js';
 import { valueType } from './chat-diagnostics.js';
-import { WORLD_INFO_LORE_LISTS } from './world-info.js';
+import { WORLD_INFO_LORE_LISTS, WORLD_INFO_SNAPSHOT_INCOMPLETE } from './world-info.js';
 
 // worldInfoMethods: 由 host.js 按宿主能力拆分，方法体与拆分前一致。
 export const worldInfoMethods = {
@@ -105,18 +105,35 @@ export const worldInfoMethods = {
             throw new ToolkitError('HOST_EXPORT_MISSING', 'TauriTavern 缺少世界书缓存访问接口。');
         const groups = { globalLore: [], characterLore: [], chatLore: [], personaLore: [] };
         const bySource = { global: 'globalLore', character: 'characterLore', chat: 'chatLore', persona: 'personaLore' };
-        for (const binding of this.activeWorldInfoBindings()) {
-            const listName = bySource[binding.source];
+        const uncached = [];
+        const unreadable = [];
+        for (const { name, source } of this.activeWorldInfoBindings()) {
+            const listName = bySource[source];
             if (!listName)
                 continue;
-            const data = cache.get(binding.name);
-            if (!data || !data.entries || typeof data.entries !== 'object')
+            const data = cache.get(name);
+            const entries = data?.entries;
+            if (data === undefined) {
+                uncached.push(name);
                 continue;
-            for (const entry of Object.values(data.entries)) {
+            }
+            if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+                unreadable.push(name);
+                continue;
+            }
+            for (const entry of Object.values(entries)) {
                 if (!entry || typeof entry !== 'object')
                     continue;
-                groups[listName].push({ ...entry, world: binding.name });
+                groups[listName].push({ ...entry, world: name });
             }
+        }
+        if (uncached.length || unreadable.length) {
+            const books = names => names.map(name => `「${name}」`).join('、');
+            const details = [uncached.length ? `未加载：${books(uncached)}` : '',
+                unreadable.length ? `条目列表不可读取：${books(unreadable)}` : ''].filter(Boolean).join('；');
+            throw new ToolkitError(WORLD_INFO_SNAPSHOT_INCOMPLETE,
+                `挂载世界书来源不完整（${details}）。请在宿主打开这些书，确认能正常读取后重试。`,
+                { uncachedCount: uncached.length, unreadableCount: unreadable.length });
         }
         return groups;
     },

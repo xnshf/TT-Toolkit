@@ -73,12 +73,16 @@ describe('host world info image message', () => {
             .rejects.toMatchObject({ code: 'HOST_EXPORT_MISSING' });
     });
 
-    it('keeps injected image messages separate for sent and dry-run rounds', async () => {
+    it('does not silently use normal registration when the host cannot register a first listener', () => {
         const host = makeHost();
-        host.recordWorldInfoInjectedPromptMessages([{ identifier: 'worldInfoImage_1', insertIndex: 1 }], { dryRun: false });
-        host.recordWorldInfoInjectedPromptMessages([{ identifier: 'worldInfoImage_2', insertIndex: 0 }], { dryRun: true });
-        expect(host.consumeWorldInfoInjectedPromptMessages({ dryRun: true })).toEqual([{ identifier: 'worldInfoImage_2', insertIndex: 0 }]);
-        expect(host.consumeWorldInfoInjectedPromptMessages({ dryRun: true })).toEqual([]);
-        expect(host.consumeWorldInfoInjectedPromptMessages({ dryRun: false })).toEqual([{ identifier: 'worldInfoImage_1', insertIndex: 1 }]);
+        const on = vi.fn();
+        host.contextModule = { getContext: () => ({
+            chat: [],
+            eventTypes: { CHAT_COMPLETION_PROMPT_READY: 'ready' },
+            eventSource: { on, removeListener: vi.fn() },
+        }) };
+        expect(() => host.onHostEvent('CHAT_COMPLETION_PROMPT_READY', vi.fn(), { first: true }))
+            .toThrow(expect.objectContaining({ code: 'HOST_EVENT_MISSING' }));
+        expect(on).not.toHaveBeenCalled();
     });
 });

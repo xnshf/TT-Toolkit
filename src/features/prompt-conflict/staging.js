@@ -1,4 +1,7 @@
+import { sameConversationIdentity } from '../../kernel/chat-projection.js';
 import { errorKind, errorMessage, ToolkitError } from '../../kernel/errors.js';
+import { worldInfoSnapshotFailureData } from '../../kernel/world-info.js';
+import { invalidateSourceSnapshot } from './collect.js';
 import {
     applyStagedChanges,
     buildOverrideLookup,
@@ -67,7 +70,7 @@ export async function beginApplyReview(runtime) {
         return;
     try {
         const identity = await runtime.host.getCurrentChatIdentity();
-        runtime.applyAnchorStableId = identity.stableId;
+        runtime.applyAnchorIdentity = identity;
         runtime.mutable.applying = true;
         runtime.mutable.phase = 'applying';
         runtime.mutable.error = '';
@@ -82,14 +85,14 @@ export async function beginApplyReview(runtime) {
 export function cancelApplyReview(runtime) {
     runtime.mutable.applying = false;
     runtime.mutable.phase = 'idle';
-    runtime.applyAnchorStableId = null;
+    runtime.applyAnchorIdentity = null;
     runtime.notify();
 }
 
 // 写回前逐条复核：聊天身份未变、待屏蔽条目仍在且正文摘要未变、待恢复记录仍存在。
-async function verifyPlan(runtime, plan) {
+async function verifyPlan(runtime, plan, anchor) {
     const identity = await runtime.host.getCurrentChatIdentity();
-    if (identity.stableId !== runtime.applyAnchorStableId)
+    if (!sameConversationIdentity(identity, anchor))
         throw new ToolkitError('CHAT_CHANGED', '应用前聊天已切换，未写入任何变更，请重新检查。');
     const metadata = parsePromptConflictChatMetadata(await runtime.host.getPromptConflictChatMetadata());
     const groups = await runtime.host.getMountedWorldInfoEntries();
@@ -110,31 +113,53 @@ async function verifyPlan(runtime, plan) {
 
 export async function commitStagedChanges(runtime) {
     const plan = runtime.mutable.stagedChanges;
-    if (!runtime.mutable.applying || !plan.size) {
+    const anchor = runtime.applyAnchorIdentity;
+    if (!runtime.mutable.applying || !anchor || !plan.size) {
         cancelApplyReview(runtime);
         return;
     }
     try {
-        const { identity, metadata } = await verifyPlan(runtime, plan);
+        const { identity, metadata } = await verifyPlan(runtime, plan, anchor);
+        if (runtime.applyAnchorIdentity !== anchor)
+            return;
         const next = applyStagedChanges(metadata, plan);
-        if (!sameMetadata(metadata, next))
-            await runtime.host.setPromptConflictChatMetadata(identity.stableId, next);
+        const result = !sameMetadata(metadata, next)
+            ? await runtime.host.setPromptConflictChatMetadata(identity.stableId, next, identity.ref)
+            : null;
         const suppressedCount = [...plan.values()].filter(change => change.action === 'suppress').length;
         const restoredCount = [...plan.values()].filter(change => change.action === 'restore').length;
-        runtime.mutable.stagedChanges = new Map();
-        runtime.mutable.applying = false;
-        runtime.applyAnchorStableId = null;
-        await runtime.refresh();
-        runtime.mutable.status = `已写入当前聊天：屏蔽 ${suppressedCount} 项，恢复 ${restoredCount} 项。`;
+        if (runtime.applyAnchorIdentity === anchor) {
+            runtime.mutable.stagedChanges = new Map();
+            runtime.mutable.applying = false;
+            runtime.applyAnchorIdentity = null;
+            await runtime.refresh();
+        }
+        if (!runtime.applyAnchorIdentity) {
+            runtime.mutable.status = result?.localMirror === false
+                ? '已写入原聊天，但未同步当前界面。请重新打开原聊天核对，不要重复提交。'
+                : `已写入当前聊天：屏蔽 ${suppressedCount} 项，恢复 ${restoredCount} 项。`;
+            runtime.notify();
+        }
         runtime.log?.info('overrides.committed', { data: { suppressedCount, restoredCount } });
     }
     catch (error) {
+        if (runtime.applyAnchorIdentity !== anchor)
+            return;
         runtime.mutable.applying = false;
-        runtime.applyAnchorStableId = null;
-        runtime.log?.error('overrides.commit_failed', {
-            data: { operation: 'overrides.commit', ...errorKind(error) },
-            sensitive: { error },
-        });
-        runtime.setError(errorMessage(error), 'overrides.commit_failed');
+        runtime.applyAnchorIdentity = null;
+        const sourceFailure = worldInfoSnapshotFailureData(error);
+        if (sourceFailure) {
+            invalidateSourceSnapshot(runtime);
+            runtime.setError(`${error.message} 未写入任何变更。`, 'overrides.commit_failed', {
+                ...sourceFailure, outcome: 'not-written',
+            });
+        }
+        else {
+            runtime.log?.error('overrides.commit_failed', {
+                data: { operation: 'overrides.commit', ...errorKind(error) },
+                sensitive: { error },
+            });
+            runtime.setError(errorMessage(error), 'overrides.commit_failed');
+        }
     }
 }

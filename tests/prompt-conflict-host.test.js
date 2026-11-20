@@ -110,6 +110,25 @@ describe('mounted world info entries', () => {
         expect(groups.characterLore[0].uid).toBe('x');
     });
 
+    it('distinguishes a cold or unreadable mounted book from a valid empty book', async () => {
+        const cache = new Map([
+            ['Empty', { entries: {} }],
+            ['Unreadable', { entries: [] }],
+        ]);
+        const host = makeHost({
+            context: { chatMetadata: { world_info: 'NewlyMounted' }, powerUserSettings: {}, characters: [] },
+            worldInfoModule: { selected_world_info: ['Empty', 'Unreadable'], worldInfoCache: cache },
+        });
+        const read = host.getMountedWorldInfoEntries();
+        await expect(read).rejects.toMatchObject({ code: 'WORLD_INFO_SNAPSHOT_INCOMPLETE' });
+        await expect(read).rejects.toThrow(/未加载.*NewlyMounted.*不可读取.*Unreadable/);
+        cache.set('NewlyMounted', { entries: { 1: { uid: 1, constant: true } } });
+        cache.set('Unreadable', { entries: {} });
+        await expect(host.getMountedWorldInfoEntries()).resolves.toEqual({
+            globalLore: [], characterLore: [], chatLore: [{ uid: 1, constant: true, world: 'NewlyMounted' }], personaLore: [],
+        });
+    });
+
     it('fails fast without the world info cache access', async () => {
         const host = makeHost({ worldInfoModule: { selected_world_info: [], world_info: {} } });
         await expect(host.getMountedWorldInfoEntries()).rejects.toMatchObject({ code: 'HOST_EXPORT_MISSING' });
@@ -140,10 +159,12 @@ describe('prompt conflict chat metadata adapter', () => {
     it('reads and writes only the prompt-conflict namespace', async () => {
         const host = makeHost();
         host.chatExtensionGet = vi.fn(async () => ({ schemaVersion: 1, disabledWorldEntries: [] }));
-        host.chatExtensionSet = vi.fn(async () => undefined);
+        const result = { persisted: true, localMirror: false };
+        const ref = { kind: 'group', chatId: 'chat-1' };
+        host.chatExtensionSet = vi.fn(async () => result);
         await expect(host.getPromptConflictChatMetadata()).resolves.toEqual({ schemaVersion: 1, disabledWorldEntries: [] });
         expect(host.chatExtensionGet).toHaveBeenCalledWith('tt-toolkit.prompt-conflict');
-        await host.setPromptConflictChatMetadata('chat-1', { schemaVersion: 1, disabledWorldEntries: [] });
-        expect(host.chatExtensionSet).toHaveBeenCalledWith('chat-1', 'tt-toolkit.prompt-conflict', { schemaVersion: 1, disabledWorldEntries: [] });
+        await expect(host.setPromptConflictChatMetadata('chat-1', { schemaVersion: 1, disabledWorldEntries: [] }, ref)).resolves.toEqual(result);
+        expect(host.chatExtensionSet).toHaveBeenCalledWith('chat-1', 'tt-toolkit.prompt-conflict', { schemaVersion: 1, disabledWorldEntries: [] }, { expectedRef: ref });
     });
 });

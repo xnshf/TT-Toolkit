@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mountModelSettingsPage } from '../src/features/model-settings/ModelSettingsPage.js';
+import { ModelSettingsRuntime } from '../src/features/model-settings/runtime.js';
 
 function runtime() {
     const state = {
@@ -9,6 +10,7 @@ function runtime() {
             presets: [{ id: 'one', name: 'Primary', apiUrl: 'https://api.example.invalid/v1', model: 'model-a', apiKey: 'secret-key' }],
         },
         busy: false,
+        loaded: true,
         status: '',
         error: '',
     };
@@ -20,11 +22,32 @@ function runtime() {
         save: vi.fn(async value => { state.settings = structuredClone(value); }),
         fetchModels: vi.fn(async () => ['model-b', 'model-a']),
         testConnection: vi.fn(async () => ({ modelCount: 2 })),
-        reset: vi.fn(async () => { state.settings = { schemaVersion: 1, activePresetId: null, presets: [] }; state.damaged = false; state.error = ''; }),
+        reset: vi.fn(async () => { state.settings = { schemaVersion: 1, activePresetId: null, presets: [] }; state.damaged = false; state.loaded = true; state.error = ''; }),
     };
 }
 
 describe('model settings page', () => {
+    it('offers retry instead of an empty editable document when loading fails', async () => {
+        const target = document.createElement('div');
+        const host = {
+            globalGet: vi.fn().mockRejectedValueOnce(new Error('storage down')).mockResolvedValue(runtime().state.settings),
+            globalSet: vi.fn(),
+        };
+        const logger = { protectValues: vi.fn(), scoped: () => ({ fail: vi.fn() }) };
+        const dispose = mountModelSettingsPage(target, { runtime: new ModelSettingsRuntime(host, logger) });
+        const button = label => [...target.querySelectorAll('button')].find(node => node.textContent === label);
+        await vi.waitFor(() => expect(button('重新加载')).toBeDefined());
+        expect(button('添加预设').disabled).toBe(true);
+        expect(button('保存模型预设').disabled).toBe(true);
+        expect(button('重置模型预设').disabled).toBe(true);
+        expect(target.textContent).not.toContain('尚无模型预设');
+        button('重新加载').click();
+        await vi.waitFor(() => expect(button('保存模型预设').disabled).toBe(false));
+        expect(target.querySelector('input[type=password]').value).toBe('secret-key');
+        expect(host.globalSet).not.toHaveBeenCalled();
+        dispose();
+    });
+
     it('places save/reset actions before cards and saves the chosen System One protocol', async () => {
         const target = document.createElement('div');
         const modelRuntime = runtime();
@@ -46,6 +69,7 @@ describe('model settings page', () => {
         const target = document.createElement('div');
         const modelRuntime = runtime();
         modelRuntime.state.damaged = true;
+        modelRuntime.state.loaded = false;
         modelRuntime.state.error = '损坏的模型预设';
         mountModelSettingsPage(target, { runtime: modelRuntime });
         await Promise.resolve();

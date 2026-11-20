@@ -210,8 +210,8 @@ describe('world info image injection', () => {
         expect(inserted.content[1].type).toBe('image_url');
         expect(inserted.content[1].image_url.url.startsWith('data:image/png;base64,')).toBe(true);
         expect(host.recordWorldInfoInjectedPromptMessages).toHaveBeenCalledWith(
-            [expect.objectContaining({ identifier: 'worldInfoImage_1', insertIndex: 2 })],
-            { dryRun: false },
+            chat,
+            [expect.objectContaining({ identifier: 'worldInfoImage_1', chatMessage: inserted })],
         );
         runtime.deactivate();
     });
@@ -286,8 +286,8 @@ describe('world info image injection', () => {
         await host._handlers.CHAT_COMPLETION_PROMPT_READY({ chat: prediction, dryRun: true });
         expect(prediction).toHaveLength(2);
         expect(host.recordWorldInfoInjectedPromptMessages).toHaveBeenCalledWith(
-            [expect.objectContaining({ identifier: 'worldInfoImage_1' })],
-            { dryRun: true },
+            prediction,
+            [expect.objectContaining({ identifier: 'worldInfoImage_1', chatMessage: prediction[1] })],
         );
 
         // 真实发送轮次不继承 dry-run 的激活集合。

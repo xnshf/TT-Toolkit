@@ -1,4 +1,4 @@
-import { errorKind, errorMessage } from '../errors.js';
+import { errorMessage, ToolkitError } from '../errors.js';
 
 export const LOG_TABLE = 'logs';
 export const INDEX_KEY = 'index-v2';
@@ -59,6 +59,9 @@ export async function flush(logger) {
     logger.pending = [];
     logger.pendingBytes = 0;
     logger.flushQueue = logger.flushQueue.then(async () => {
+        // 已排队的批次也必须服从前一批触发的暂停。
+        if (!logger.persistenceAvailable || logger.current !== session)
+            return;
         const text = batch.map(eventLine).join('');
         const blob = new Blob([text], { type: 'application/x-ndjson' });
         const chunkSequence = logger.nextChunkSequence++;
@@ -75,18 +78,21 @@ export async function flush(logger) {
             logger.mutable.persistenceError = '';
             logger.syncSessions();
         }
-        catch (error) {
-            logger.mutable.persistenceError = `日志持久化失败（${phase}）：${errorMessage(error)}。已暂停日志写入，当前日志继续保留在内存；请先导出可读日志，检查存储后清空日志再重新启用。`;
+        catch {
+            logger.mutable.persistenceError = `日志持久化失败（${phase}），已暂停写入。当前日志继续保留在内存，受内存上限限制；停用后仍可导出，重载不会恢复内存事件。请先导出可读日志，检查存储后清空日志再重新启用。`;
             logger.persistenceAvailable = false;
             logger.storageBlocked = true;
-            logger.volatileSessions.set(session.id, structuredClone(logger.mutable.currentEntries));
+            session.interrupted = true;
+            logger.pending = [];
+            logger.pendingBytes = 0;
+            clearFlushTimer(logger);
             console.warn('[TT-Toolkit][system][logger][persistence.failed]', {
                 operation: 'logs.flush', phase,
                 code: { 'blob-write': 'LOG_BLOB_WRITE_FAILED', retention: 'LOG_RETENTION_FAILED', 'index-write': 'LOG_INDEX_WRITE_FAILED' }[phase],
                 sourceLocation: 'kernel/logging/session-store.js:flush', chunkSequence, eventCount: batch.length,
                 outcome: 'memory-only', nextAction: 'export-readable-logs-inspect-storage-and-clear-logs',
             });
-            logger.notify();
+            logger.syncSessions();
         }
     });
     return logger.flushQueue;
@@ -143,35 +149,92 @@ export function syncSessions(logger) {
     logger.notify();
 }
 
-// 读取历史会话事件：优先内存副本，其次按分块从 store 读回。
-export async function loadSession(logger, id) {
+function parseChunk(text, chunk) {
+    const events = [];
+    for (const line of text.split('\n')) {
+        if (!line.trim())
+            continue;
+        const event = JSON.parse(line);
+        if (!event || typeof event !== 'object' || Array.isArray(event)
+            || event.sequence !== chunk.firstSequence + events.length
+            || !['debug', 'info', 'warn', 'error'].includes(event.level)
+            || ['timestamp', 'featureId', 'source', 'event'].some(field => typeof event[field] !== 'string'))
+            return null;
+        events.push(event);
+    }
+    return events.length === chunk.eventCount && events.at(-1)?.sequence === chunk.lastSequence ? events : null;
+}
+
+async function readChunk(logger, chunk) {
+    let text;
     try {
-        const volatile = logger.volatileSessions.get(id);
-        if (volatile)
-            return structuredClone(volatile);
-        if (id === logger.mutable.currentSessionId && !logger.persistenceAvailable)
-            return structuredClone(logger.mutable.currentEntries);
-        if (id === logger.mutable.currentSessionId)
-            await logger.flush();
-        const session = logger.index.sessions.find(item => item.id === id);
-        if (!session)
-            return [];
-        const events = [];
-        for (const chunk of session.chunks) {
-            const text = await (await logger.host.storeGetBlob(LOG_TABLE, chunk.key)).text();
-            for (const line of text.split('\n'))
-                if (line.trim())
-                    events.push(JSON.parse(line));
-        }
-        return events;
+        text = await (await logger.host.storeGetBlob(LOG_TABLE, chunk.key)).text();
     }
     catch (error) {
-        logger.record('error', 'system', 'logger', 'session.load_failed', {
-            data: { operation: 'session.load', ...errorKind(error) },
-            sensitive: { error },
-        });
-        throw error;
+        return { code: error instanceof ToolkitError && error.code === 'STORE_BLOB_NOT_FOUND' ? error.code : 'LOG_CHUNK_READ_FAILED' };
     }
+    try {
+        const events = parseChunk(text, chunk);
+        if (events)
+            return { events };
+    }
+    catch {
+        // Invalid JSONL shares the same outcome as an invalid event or range.
+    }
+    return { code: 'LOG_CHUNK_INVALID' };
+}
+
+function describeUnreadableChunk(session, chunk, index, code, firstMemorySequence) {
+    const suffix = chunk.key.slice(session.id.length).match(/^\.(\d+)\.jsonl$/);
+    const number = suffix && Number(suffix[1]);
+    const lastSequence = Math.min(chunk.lastSequence, firstMemorySequence - 1);
+    return {
+        chunkIndex: index,
+        chunkSequence: Number.isSafeInteger(number) && chunk.key.startsWith(session.id) ? number : null,
+        firstSequence: chunk.firstSequence, lastSequence,
+        eventCount: Math.min(chunk.eventCount, Math.max(0, lastSequence - chunk.firstSequence + 1)),
+        code,
+    };
+}
+
+// 暂停后的活动会话可直接读内存；结束后从有界尾部接续已写入的分块。
+export async function loadSession(logger, id) {
+    if (id === logger.mutable.currentSessionId)
+        await logger.flush();
+    const events = [];
+    const unreadableChunks = [];
+    if (id === logger.mutable.currentSessionId && !logger.persistenceAvailable)
+        return { events: structuredClone(logger.mutable.currentEntries), unreadableChunks };
+    const sessionIndex = logger.index.sessions.findIndex(item => item.id === id);
+    const session = logger.index.sessions[sessionIndex];
+    if (!session)
+        return { events, unreadableChunks };
+    const stopped = logger.mutable.stoppedMemorySession;
+    const tail = id === stopped?.id ? stopped.entries : [];
+    const firstMemorySequence = tail[0]?.sequence ?? Infinity;
+    for (const [index, chunk] of session.chunks.slice().entries()) {
+        if (chunk.firstSequence >= firstMemorySequence)
+            continue;
+        const result = await readChunk(logger, chunk);
+        if (result.events) {
+            for (const event of result.events) {
+                if (event.sequence < firstMemorySequence)
+                    events.push(event);
+            }
+        }
+        else {
+            const issue = describeUnreadableChunk(session, chunk, index, result.code, firstMemorySequence);
+            unreadableChunks.push(issue);
+            // Read-only diagnostics must not append logs and trigger retention.
+            console.warn('[TT-Toolkit][system][logger][session.chunk_unreadable]', {
+                operation: 'session.load', phase: 'chunk-read', sourceLocation: 'kernel/logging/session-store.js:loadSession',
+                sessionIndex, ...issue, outcome: 'chunk-omitted', nextAction: 'export-readable-logs-and-inspect-storage',
+            });
+        }
+    }
+    return logger.index.sessions.includes(session)
+        ? { events: events.concat(structuredClone(tail)), unreadableChunks }
+        : { events: [], unreadableChunks: [] };
 }
 
 // 导出只读文本：json 保留会话元信息，log 每行一条，便于人工检索。
@@ -183,7 +246,11 @@ export function exportEntries(logger, entries, format) {
         if (!item || typeof item.sessionId !== 'string' || !item.event)
             continue;
         const events = grouped.get(item.sessionId) ?? [];
-        events.push(structuredClone(item.event));
+        const event = structuredClone(item.event);
+        event.data = logger.redactor.redactKeys(event.data);
+        if (event.sensitive !== undefined)
+            event.sensitive = logger.redactor.redactKeys(event.sensitive);
+        events.push(event);
         grouped.set(item.sessionId, events);
     }
     const sessions = logger.index.sessions

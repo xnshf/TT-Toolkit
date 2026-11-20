@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildOperationPlan } from '../src/features/chat-cleaner/plan.js';
 import { createDefaultProgress, createDefaultSettings } from '../src/features/chat-cleaner/schema.js';
-import { commitOperation } from '../src/features/chat-cleaner/transaction.js';
+import { commitOperation as commitWithHost } from '../src/features/chat-cleaner/transaction.js';
+import { ToolkitError } from '../src/kernel/errors.js';
+import { chatMethods } from '../src/kernel/host-chat.js';
+const commitOperation = (host, plan) => commitWithHost({ isGenerationInProgress: () => false, ...host }, plan);
 const identity = { stableId: 'chat-1', label: 'Test chat', ref: {} };
 function fixture() {
     const message = {
@@ -178,6 +181,84 @@ describe('commit transaction', () => {
         expect(message.swipes).toEqual(['Hello {{user}}']);
         expect(message.mes).toBe('Hello Reader');
     });
+    it('leaves canonical data unchanged when generation starts during identity validation', async () => {
+        const { message, plan } = fixture();
+        const before = structuredClone(message);
+        let generating = false;
+        const host = {
+            isGenerationInProgress: () => generating,
+            assertIdentity: async () => { generating = true; }, context: { chat: [message] },
+            saveCurrentChat: vi.fn(), reloadCurrentChat: vi.fn(),
+        };
+        await expect(commitOperation(host, plan)).rejects.toMatchObject({ code: 'CLEANER_GENERATION_ACTIVE' });
+        expect(message).toEqual(before);
+        expect(host.saveCurrentChat).not.toHaveBeenCalled();
+        expect(host.reloadCurrentChat).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('never reloads a new generation after save dispatch (save rejected: %s)', async reject => {
+        const { message, plan } = fixture();
+        let generating = false;
+        const host = {
+            isGenerationInProgress: () => generating,
+            assertIdentity: async () => undefined, context: { chat: [message] },
+            saveCurrentChat: vi.fn(async () => {
+                generating = true;
+                if (reject)
+                    throw new Error('disk');
+            }), reloadCurrentChat: vi.fn(),
+        };
+        await expect(commitOperation(host, plan)).rejects.toMatchObject({ code: reject ? 'SAVE_FAILED' : 'CLEANER_GENERATION_AFTER_SAVE' });
+        expect(host.saveCurrentChat).toHaveBeenCalledOnce();
+        expect(host.reloadCurrentChat).not.toHaveBeenCalled();
+    });
+
+    it.each(['CHAT_CHANGED', 'COMMIT_CONFLICT'])('preserves %s from the save without requesting a reload', async code => {
+        const { message, plan } = fixture();
+        const conflict = new ToolkitError(code, 'Target changed');
+        const host = {
+            assertIdentity: async () => undefined, context: { chat: [message] },
+            saveCurrentChat: vi.fn().mockRejectedValue(conflict), reloadCurrentChat: vi.fn(),
+        };
+        await expect(commitOperation(host, plan)).rejects.toBe(conflict);
+        expect(host.reloadCurrentChat).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('never reloads a different branch sharing the stable ID (save rejected: %s)', async reject => {
+        const { message, plan } = fixture();
+        const identity = { ...plan.identity, ref: { kind: 'character', characterId: 'char-1', fileName: 'original' } };
+        let current = identity;
+        const host = {
+            identity: async () => current,
+            assertIdentity: chatMethods.assertIdentity,
+            context: { chat: [message] },
+            saveCurrentChat: vi.fn(async () => {
+                current = { ...identity, ref: { ...identity.ref, fileName: 'sibling' } };
+                if (reject)
+                    throw new Error('disk');
+            }),
+            reloadCurrentChat: vi.fn(),
+        };
+        await expect(commitOperation(host, { ...plan, identity })).rejects.toMatchObject(reject
+            ? { code: 'SAVE_FAILED', message: expect.stringContaining('未尝试重载') }
+            : { code: 'CHAT_CHANGED', message: expect.stringContaining('宿主已返回正文保存成功') });
+        expect(host.reloadCurrentChat).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('does not repeat a failed reload (save rejected: %s)', async reject => {
+        const { message, plan } = fixture();
+        const host = {
+            assertIdentity: async () => undefined, context: { chat: [message] },
+            saveCurrentChat: reject ? vi.fn().mockRejectedValue(new Error('disk')) : vi.fn(),
+            reloadCurrentChat: vi.fn().mockRejectedValue(new Error('read')),
+        };
+        await expect(commitOperation(host, plan)).rejects.toMatchObject(reject
+            ? { code: 'SAVE_FAILED', message: expect.stringContaining('恢复重载也失败') }
+            : { code: 'CLEANER_REFRESH_FAILED', message: expect.stringContaining('宿主已返回正文保存成功') });
+        expect(host.saveCurrentChat).toHaveBeenCalledOnce();
+        expect(host.reloadCurrentChat).toHaveBeenCalledOnce();
+    });
+
     it('reloads authoritative data when persistence fails', async () => {
         const { message, plan } = fixture();
         const host = {

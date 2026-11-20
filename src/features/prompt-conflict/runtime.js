@@ -3,7 +3,7 @@ import { worldInfoContractFailureData } from '../../kernel/world-info.js';
 import { LlmPresetStore } from '../../kernel/llm-presets.js';
 import { LlmTaskService } from '../../kernel/llm-tasks.js';
 import { PromptConflictAnalysisService } from './model-analysis.js';
-import { applyPreviousSelection, collectSources, summarizeSources } from './collect.js';
+import { applyPreviousSelection, collectSources, recordSnapshotReadFailure, summarizeSources } from './collect.js';
 import { filterWorldInfoPayload } from './overrides.js';
 import {
     createDefaultPromptConflictChatMetadata,
@@ -57,7 +57,7 @@ export class PromptConflictRuntime {
         this.runSequence = 0;
         this.taskController = null;
         this.metadataRecords = [];
-        this.applyAnchorStableId = null;
+        this.applyAnchorIdentity = null;
     }
 
     subscribe(listener) {
@@ -112,7 +112,7 @@ export class PromptConflictRuntime {
         this.cancelRun();
         this.mutable.stagedChanges = new Map();
         this.mutable.applying = false;
-        this.mutable.applyAnchorStableId = null;
+        this.applyAnchorIdentity = null;
         for (const dispose of this.disposers.splice(0))
             dispose();
         this.log?.info('deactivated');
@@ -163,10 +163,12 @@ export class PromptConflictRuntime {
     async resetChatMetadata() {
         try {
             const identity = await this.host.getCurrentChatIdentity();
-            await this.host.setPromptConflictChatMetadata(identity.stableId, createDefaultPromptConflictChatMetadata());
+            const result = await this.host.setPromptConflictChatMetadata(identity.stableId, createDefaultPromptConflictChatMetadata(), identity.ref);
             await this.refresh();
-            this.mutable.metadataError = '';
-            this.mutable.status = '已重置本聊天的冲突检测屏蔽数据。';
+            this.mutable.status = result.localMirror
+                ? '已重置本聊天的冲突检测屏蔽数据。'
+                : '已重置原聊天的屏蔽数据，但未同步当前界面。请重新打开原聊天核对。';
+            this.notify();
         }
         catch (error) {
             this.log?.error('metadata.reset_failed', { data: { operation: 'metadata.reset', ...errorKind(error) }, sensitive: { error } });
@@ -187,7 +189,7 @@ export class PromptConflictRuntime {
             this.cancelRun();
             this.mutable.stagedChanges = new Map();
             this.mutable.applying = false;
-            this.mutable.applyAnchorStableId = null;
+            this.applyAnchorIdentity = null;
             this.mutable.reportStale = true;
             this.log?.info('source.chat_changed');
             void this.refresh();
@@ -282,11 +284,7 @@ export class PromptConflictRuntime {
         }
         catch (error) {
             this.mutable.phase = 'idle';
-            this.mutable.error = errorMessage(error);
-            this.log?.error('snapshot.refresh_failed', {
-                data: { operation: 'snapshot.refresh', ...errorKind(error) },
-                sensitive: { error },
-            });
+            recordSnapshotReadFailure(this, error);
         }
         this.notify();
     }
@@ -310,6 +308,9 @@ export class PromptConflictRuntime {
     }
 
     async applySelection(nextIds) {
+        const snapshot = this.mutable.snapshot;
+        if (!snapshot)
+            return;
         const allowed = new Set(this.analyzableSources().map(source => source.sourceId));
         const selected = new Set();
         for (const sourceId of nextIds) {
@@ -317,9 +318,12 @@ export class PromptConflictRuntime {
                 selected.add(sourceId);
         }
         this.mutable.selectedSourceIds = selected;
-        for (const source of this.snapshotSources())
+        for (const source of snapshot.sources)
             source.enabledForDetection = selected.has(source.sourceId);
-        this.mutable.snapshot.fingerprint = await computeSnapshotFingerprint(this.snapshotSources());
+        const fingerprint = await computeSnapshotFingerprint(snapshot.sources);
+        if (this.mutable.snapshot !== snapshot)
+            return;
+        snapshot.fingerprint = fingerprint;
         this.mutable.reportStale = this.computeReportStale();
         this.notify();
     }
@@ -377,6 +381,8 @@ export class PromptConflictRuntime {
             this.notify();
             return;
         }
+        if (!this.mutable.snapshot && this.mutable.error)
+            return;
         const selected = this.selectedSources();
         if (!selected.length) {
             this.setError('未选择任何可分析来源。', 'detection.no_sources');

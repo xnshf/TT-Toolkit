@@ -75,6 +75,10 @@ export class PromptViewerRuntime {
         this.unsubscribeEvents?.();
         this.unsubscribeEvents = this.host.subscribePromptViewerEvents({
             onGenerationStart: event => this.onGenerationStart(event),
+            onGenerationSettled: round => {
+                if (this.generation === round)
+                    this.onGenerationEnd();
+            },
             onPromptReady: event => this.onPromptReady(event),
             onWorldInfoActivated: entries => this.onWorldInfoActivated(entries),
             onWorldInfoScan: event => this.onWorldInfoScan(event),
@@ -139,6 +143,7 @@ export class PromptViewerRuntime {
         }
         this.generation = { type, roundCount: 0 };
         this.roundWorldEntries = [];
+        return this.generation;
     }
 
     onPromptReady(event) {
@@ -152,13 +157,14 @@ export class PromptViewerRuntime {
         });
     }
 
-    async capturePromptReady({ dryRun }) {
+    async capturePromptReady({ chat, dryRun }) {
         if (dryRun) {
             if (!this.predictionInFlight || !this.predictionBuffer)
                 return;
             this.predictionBuffer.roundCount += 1;
             const snapshot = await this.createSnapshot({
                 kind: 'prediction',
+                chat,
                 generationType: 'normal',
                 worldEntries: this.predictionBuffer.worldEntries,
             });
@@ -166,15 +172,19 @@ export class PromptViewerRuntime {
             this.predictionBuffer.snapshot = snapshot;
             return;
         }
-        if (!this.generation)
+        const generation = this.generation;
+        if (!generation)
             return;
-        this.generation.roundCount += 1;
+        const roundCount = ++generation.roundCount;
         const snapshot = await this.createSnapshot({
             kind: 'sent',
-            generationType: this.generation.type,
+            chat,
+            generationType: generation.type,
             worldEntries: this.roundWorldEntries,
         });
-        snapshot.assemblyRoundCount = this.generation.roundCount;
+        if (this.generation !== generation || generation.roundCount !== roundCount)
+            return;
+        snapshot.assemblyRoundCount = roundCount;
         const hadSnapshot = Boolean(this.mutable.snapshot);
         this.mutable.snapshot = snapshot;
         this.mutable.prediction = null;
@@ -222,8 +232,8 @@ export class PromptViewerRuntime {
         this.notify();
     }
 
-    async createSnapshot({ kind, generationType, worldEntries }) {
-        const raw = await this.host.readPromptViewerSnapshot({ dryRun: kind === 'prediction' });
+    async createSnapshot({ kind, chat, generationType, worldEntries }) {
+        const raw = await this.host.readPromptViewerSnapshot({ chat });
         const projectedWorldEntries = projectWorldEntries(worldEntries);
         const items = attachWorldEntryRefs(buildPromptItemView(raw.messages), projectedWorldEntries);
         const info = this.mutable.info;

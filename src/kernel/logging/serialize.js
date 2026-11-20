@@ -15,14 +15,13 @@ function safeValue(value, seen = new WeakSet(), depth = 0) {
     seen.add(value);
     if (value instanceof Error) {
         const error = value;
-        return { name: error.name, message: error.message, stack: error.stack, code: error.code, cause: safeValue(error.cause, seen, depth + 1) };
+        return Object.fromEntries(['name', 'message', 'stack', 'code', 'cause']
+            .map(key => [key, safeValue(error[key], seen, depth + 1)]));
     }
     if (Array.isArray(value))
         return value.map(item => safeValue(item, seen, depth + 1));
-    const output = {};
-    for (const [key, item] of Object.entries(value).slice(0, 100))
-        output[key] = safeValue(item, seen, depth + 1);
-    return output;
+    return Object.fromEntries(Object.entries(value).slice(0, 100)
+        .map(([key, item]) => [key, safeValue(item, seen, depth + 1)]));
 }
 function jsonBytes(value) {
     return new TextEncoder().encode(JSON.stringify(value)).byteLength;

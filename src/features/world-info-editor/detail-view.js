@@ -106,14 +106,6 @@ export function createDetailView({ runtime, view, target, render, runNavigating,
             scheduleScroll(textarea);
         });
 
-        // 与普通模式同一套宏，并提供成对包裹。
-        const applyMacro = (value, selection) => {
-            textarea.value = value;
-            runtime.updateDraftField('content', value);
-            textarea.focus();
-            textarea.setSelectionRange(selection.start, selection.end);
-        };
-
         const header = h('div', { className: 'wie-zen-header' },
             actionButton('✕ 关闭', () => {
                 view.zenMode = false;
@@ -129,7 +121,7 @@ export function createDetailView({ runtime, view, target, render, runNavigating,
         // 宏栏放在输入区上方：软键盘从底部弹起，顶部栏始终可见可点。
         return h('div', { className: 'wie-zen-overlay' },
             header,
-            renderMacroBar(textarea, applyMacro),
+            renderMacroBar(textarea),
             textarea,
         );
     }

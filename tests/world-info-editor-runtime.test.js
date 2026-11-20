@@ -433,20 +433,47 @@ describe('WorldInfoEditorRuntime conflict recovery', () => {
 });
 
 describe('WorldInfoEditorRuntime malformed entries', () => {
-    it('degrades a malformed entry to one readable, deletable row', async () => {
-        const host = createMockHost({ LoreChat: { entries: { 1: { uid: 1, comment: 'A' }, 2: ['broken'] } } });
+    it.each([[null], ['broken'], [['broken']]])('degrades a malformed first entry (%j) to one readable, deletable row', async broken => {
+        const healthy = { uid: 2, comment: 'A', constant: true, content: '正文' };
+        const disabled = { uid: 3, disable: true };
+        const host = createMockHost({ LoreChat: { entries: { 1: broken, 2: healthy, 3: disabled } } });
         const runtime = new WorldInfoEditorRuntime(host);
         await runtime.init();
 
-        const entries = runtime.getFilteredEntries();
-        expect(entries).toHaveLength(2);
-        expect(entries.find(item => item.uid === 2)).toMatchObject({ broken: true, comment: '(结构异常的条目)' });
-        await expect(runtime.selectEntry(2)).rejects.toThrow(/结构异常/);
+        expect(runtime.getStats()).toMatchObject({ total: 3, constant: 1, active: 1, disabled: 1, totalTokens: 2, imageCount: 0 });
+        expect(runtime.state.currentDraft).toBeNull();
+        expect(runtime.getFilteredEntries()).toContainEqual(expect.objectContaining({ uid: 1, broken: true }));
+        runtime.setFilter('active');
+        expect(runtime.getFilteredEntries().map(entry => entry.uid)).toEqual([2]);
+        await expect(runtime.selectEntry(1)).rejects.toThrow(/结构异常/);
 
-        await runtime.deleteEntry(2);
-        expect(host._store.LoreChat.entries[2]).toBeUndefined();
-        expect(runtime.getFilteredEntries()).toHaveLength(1);
-        runtime.cancelTimer();
+        await runtime.deleteEntry(1);
+        expect(host._store.LoreChat.entries).toEqual({ 2: healthy, 3: disabled });
+        expect(runtime.getStats().total).toBe(2);
+    });
+
+    it.each([
+        { reload: false, code: 'WORLD_INFO_CHANGED' },
+        { reload: true, code: 'WORLD_INFO_DELETE_STALE' },
+    ])('keeps the externally replaced row after confirmation (reload=$reload)', async ({ reload, code }) => {
+        const host = createMockHost({ LoreChat: { entries: { 1: null } } });
+        const log = { warn: vi.fn() };
+        const runtime = new WorldInfoEditorRuntime(host, log);
+        await runtime.init();
+
+        const confirmedTarget = { world: 'LoreChat', value: null };
+        const replacement = { uid: 1, content: 'external change' };
+        host._store.LoreChat.entries[1] = replacement;
+        if (reload)
+            await runtime.refreshWorlds();
+
+        await expect(runtime.deleteEntry(1, { confirmedTarget })).rejects.toMatchObject({ code });
+        expect(host.saveWorldInfo).not.toHaveBeenCalled();
+        expect(host._store.LoreChat.entries[1]).toEqual(replacement);
+        expect(log.warn).toHaveBeenCalledWith('world_info.entry_delete_failed', { data: {
+            operation: 'delete_entry', stage: reload ? 'validate-target' : 'commit',
+            kind: code, outcome: 'deletion-not-confirmed', nextAction: 'reload-and-review',
+        } });
     });
 });
 

@@ -4,9 +4,10 @@ import { sameConversationIdentity } from '../../kernel/chat-projection.js';
 import { rulesFingerprint } from './rules.js';
 import { buildOperationPlan, classifyMessage } from './plan.js';
 import { createDefaultProgress, createDefaultSettings, parseProgress, parseSettings } from './schema.js';
-import { commitOperation } from './transaction.js';
+import { assertGenerationIdle, commitOperation } from './transaction.js';
 const SETTINGS_KEY = 'chat-cleaner-settings-v1';
 const PROGRESS_NAMESPACE = 'tt-toolkit.chat-cleaner';
+const PROGRESS_MIRROR_SKIPPED = '未同步当前界面，请重新打开原聊天核对断点，不要重复提交。';
 export class ChatCleanerRuntime {
     host;
     log;
@@ -24,6 +25,7 @@ export class ChatCleanerRuntime {
     notifyScheduled = false;
     unsubscribe = null;
     queue = Promise.resolve();
+    generationEpoch = 0;
     constructor(host, log) {
         this.host = host;
         this.log = log;
@@ -117,10 +119,11 @@ export class ChatCleanerRuntime {
     async resetProgress() {
         try {
             const identity = await this.host.identity();
-            await this.host.chatExtensionSet(identity.stableId, PROGRESS_NAMESPACE, null);
-            this.mutable.progress = createDefaultProgress();
-            this.log.warn('progress.reset', { data: { chatAlias: this.host.chatAlias(identity.stableId) }, sensitive: { stableChatId: identity.stableId } });
+            const result = await this.writeProgress(identity, null, () => assertGenerationIdle(this.host));
+            this.mutable.status = result.localMirror ? '当前聊天清洗断点已重置。' : `原聊天清洗断点已重置。${PROGRESS_MIRROR_SKIPPED}`;
+            this.log.warn('progress.reset', { data: { chatAlias: this.host.chatAlias(identity.stableId), localMirror: result.localMirror }, sensitive: { stableChatId: identity.stableId } });
             this.notify();
+            return result;
         }
         catch (error) {
             logCleanerFailure(this.log, 'progress.reset_failed', 'progress.reset', error);
@@ -180,8 +183,13 @@ export class ChatCleanerRuntime {
             return plan;
         });
     }
+    async writeProgress(identity, progress, beforeWrite) {
+        const result = await this.host.chatExtensionSet(identity.stableId, PROGRESS_NAMESPACE, progress, { expectedRef: identity.ref, beforeWrite });
+        this.mutable.progress = result.localMirror ? (progress ?? createDefaultProgress()) : null;
+        return result;
+    }
     async commitManual(allowEmpty, expectedPlan = this.mutable.currentPlan) {
-        await this.runBusy('cleaner.commit', async () => {
+        return this.runBusy('cleaner.commit', async () => {
             const plan = this.mutable.currentPlan;
             if (plan !== expectedPlan)
                 throw new ToolkitError('STALE_PLAN', '确认期间清洗计划已改变，请重新预览并确认。');
@@ -190,19 +198,36 @@ export class ChatCleanerRuntime {
             if (!allowEmpty && plan.changes.some(change => change.emptySwipeIndexes.length > 0)) {
                 throw new ToolkitError('EMPTY_CONFIRM_REQUIRED', '计划包含将变为空的 swipe，需要额外确认。');
             }
-            if (plan.changes.length > 0)
-                await commitOperation(this.host, plan, this.log);
+            const epoch = this.generationEpoch;
+            const checkWrite = saved => assertGenerationIdle(this.host, epoch !== this.generationEpoch, saved);
+            const hasChanges = plan.changes.length > 0;
+            let result;
             try {
-                await this.host.assertIdentity(plan.identity.stableId, plan.identity.ref);
-                await this.host.chatExtensionSet(plan.identity.stableId, PROGRESS_NAMESPACE, plan.nextProgress);
-                this.mutable.progress = plan.nextProgress;
+                if (hasChanges)
+                    await commitOperation(this.host, plan, this.log, checkWrite);
+                try {
+                    result = await this.writeProgress(plan.identity, plan.nextProgress, () => checkWrite(hasChanges));
+                }
+                catch (error) {
+                    if (['CLEANER_GENERATION_ACTIVE', 'CLEANER_GENERATION_AFTER_SAVE', 'HOST_GENERATION_STATUS_MISSING', 'HOST_GENERATION_STATUS_INVALID'].includes(error?.code))
+                        throw error;
+                    const prefix = hasChanges ? '原聊天正文已保存，但' : '';
+                    if (['CHAT_CHANGED', 'NO_CHAT'].includes(error?.code))
+                        throw new ToolkitError(error.code, `${prefix}无法确认当前仍是原聊天，未写入清洗断点。请重新打开原聊天并预览。`);
+                    throw new ToolkitError('PROGRESS_SAVE_FAILED', `${prefix}清洗进度保存未获宿主确认，请重新打开原聊天核对。`);
+                }
             }
             catch (error) {
-                throw new ToolkitError('PROGRESS_SAVE_FAILED', `聊天可能已保存，但增量进度保存失败：${errorMessage(error)}`);
+                if (['CHAT_CHANGED', 'NO_CHAT', 'COMMIT_CONFLICT', 'SAVE_FAILED', 'CLEANER_REFRESH_FAILED', 'CLEANER_GENERATION_AFTER_SAVE'].includes(error?.code))
+                    this.mutable.currentPlan = null;
+                throw error;
             }
             this.mutable.status = `手动清洗完成：修改 ${plan.stats.changedMessages} 层，删除 ${plan.stats.removedChars} 个字符，清除 ${plan.stats.removedSwipes} 个其它候选。${plan.warnings.length ? ` 局部警告：${plan.warnings.join('；')}` : ''}`;
-            this.log.info('manual.committed', { data: { chatAlias: this.host.chatAlias(plan.identity.stableId), allowEmpty, ...plan.stats }, sensitive: { chatIdentity: plan.identity } });
+            if (!result.localMirror)
+                this.mutable.status += ` 原聊天断点已保存，${PROGRESS_MIRROR_SKIPPED}`;
+            this.log.info('manual.committed', { data: { chatAlias: this.host.chatAlias(plan.identity.stableId), allowEmpty, localMirror: result.localMirror, ...plan.stats }, sensitive: { chatIdentity: plan.identity } });
             this.mutable.currentPlan = null;
+            return result;
         });
     }
     syncAutoSubscription() {
@@ -210,45 +235,74 @@ export class ChatCleanerRuntime {
         this.unsubscribe = null;
         if (!this.mutable.active || !this.mutable.settings.auto.enabled)
             return;
-        this.log.debug('auto.subscribed');
-        this.unsubscribe = this.host.onGenerationEnded(messageIndex => {
-            this.queue = this.queue.then(() => this.runAutomatic(messageIndex), () => this.runAutomatic(messageIndex));
+        const stopWatchingStart = this.host.onHostEvent('GENERATION_STARTED', (_type, _options, dryRun) => {
+            if (dryRun !== true)
+                this.generationEpoch++;
         });
+        try {
+            const stopWatchingEnd = this.host.onGenerationEnded((messageIndex, stillCurrent) => {
+                const epoch = this.generationEpoch;
+                const run = () => this.runAutomatic(messageIndex, epoch, stillCurrent);
+                this.queue = this.queue.then(run, run);
+            }, code => {
+                this.mutable.status = '自动清洗已跳过：未能确认宿主生成结束，正文和清洗进度均未改动。可用手动预览检查。';
+                this.log.warn('auto.end_unconfirmed', { data: {
+                    operation: 'cleaner.auto', stage: 'generation-end', code, sourceLocation: 'kernel/host-chat.js',
+                    outcome: 'skipped', recoveryAction: 'preview_manually',
+                } });
+                this.notify();
+            });
+            this.unsubscribe = () => { this.generationEpoch++; stopWatchingStart(); stopWatchingEnd(); };
+        }
+        catch (error) {
+            stopWatchingStart();
+            throw error;
+        }
+        this.log.debug('auto.subscribed');
     }
-    async runAutomatic(messageIndex) {
-        if (this.mutable.busy || !this.mutable.active || !this.mutable.settings.auto.enabled)
+    async runAutomatic(messageIndex, epoch = this.generationEpoch, stillCurrent = () => true) {
+        if (this.mutable.busy || !this.mutable.active || !this.mutable.settings.auto.enabled || !stillCurrent())
             return;
         this.mutable.busy = true;
         this.mutable.error = '';
         this.notify();
+        const checkWrite = saved => assertGenerationIdle(this.host, epoch !== this.generationEpoch, saved);
         try {
+            checkWrite(false);
             const snapshot = await this.host.snapshot();
-            // TauriTavern 在消息入列后才于 hideStopButton() 发出 GENERATION_ENDED，负载是 chat.length
-            // （比新消息索引大 1）；legacy 契约则约定为“最后一条消息的索引”。两种语义都落到同一目标。
-            const raw = snapshot.messages[messageIndex] ?? snapshot.messages[messageIndex - 1];
-            if (!raw || classifyMessage(raw, messageIndex) !== 'assistant') {
+            checkWrite(false);
+            if (!stillCurrent())
+                return;
+            // The adapter only delivers the verified host chat.length payload.
+            const raw = Number.isSafeInteger(messageIndex) && messageIndex === snapshot.messages.length
+                ? snapshot.messages[messageIndex - 1] : undefined;
+            if (!raw || classifyMessage(raw, messageIndex - 1) !== 'assistant') {
                 this.log.debug('auto.skipped', { data: { messageIndex } });
                 return;
             }
             this.log.debug('auto.triggered', { data: { messageIndex } });
             const progress = await this.loadProgress();
             await this.host.assertIdentity(snapshot.identity.stableId, snapshot.identity.ref);
+            checkWrite(false);
             const plan = await this.buildPlan(snapshot, { mode: 'auto', progress });
-            if (!this.mutable.active || !this.mutable.settings.auto.enabled)
+            checkWrite(false);
+            if (!this.mutable.active || !this.mutable.settings.auto.enabled || !stillCurrent())
                 return;
             if (plan.baselineOnly) {
-                await this.host.chatExtensionSet(plan.identity.stableId, PROGRESS_NAMESPACE, plan.nextProgress);
-                this.mutable.progress = plan.nextProgress;
-                this.mutable.status = '自动清洗已建立新基线，未回扫旧楼层。';
+                const result = await this.writeProgress(plan.identity, plan.nextProgress, () => checkWrite(false));
+                this.mutable.status = result.localMirror
+                    ? '自动清洗已建立新基线，未回扫旧楼层。'
+                    : `原聊天已保存新基线，未回扫旧楼层。${PROGRESS_MIRROR_SKIPPED}`;
                 this.log.info('auto.baseline_created', { data: { chatAlias: this.host.chatAlias(plan.identity.stableId), messageIndex }, sensitive: { chatIdentity: plan.identity } });
                 return;
             }
             if (plan.changes.some(change => change.emptySwipeIndexes.length > 0)) {
                 throw new ToolkitError('AUTO_EMPTY_REJECTED', '自动清洗会产生空 swipe，整批已拒绝；请使用手动预览处理。');
             }
-            if (plan.changes.length > 0)
-                await commitOperation(this.host, plan, this.log);
-            await this.host.assertIdentity(plan.identity.stableId, plan.identity.ref);
+            const hasChanges = plan.changes.length > 0;
+            if (hasChanges)
+                await commitOperation(this.host, plan, this.log, checkWrite);
+            const result = await this.writeProgress(plan.identity, plan.nextProgress, () => checkWrite(hasChanges));
             const rolledBack = plan.rollback.assistant || plan.rollback.user;
             if (rolledBack) {
                 this.log.warn('auto.watermark_rolled_back', {
@@ -256,12 +310,17 @@ export class ChatCleanerRuntime {
                     sensitive: { chatIdentity: plan.identity },
                 });
             }
-            await this.host.chatExtensionSet(plan.identity.stableId, PROGRESS_NAMESPACE, plan.nextProgress);
-            this.mutable.progress = plan.nextProgress;
             this.mutable.status = `自动清洗完成：修改 ${plan.stats.changedMessages} 层，删除 ${plan.stats.removedChars} 个字符，清除 ${plan.stats.removedSwipes} 个其它候选。${rolledBack ? '检测到楼层删除，已回滚越界清洗断点。' : ''}${plan.warnings.length ? ` 局部警告：${plan.warnings.join('；')}` : ''}`;
-            this.log.info('auto.committed', { data: { chatAlias: this.host.chatAlias(plan.identity.stableId), messageIndex, ...plan.stats }, sensitive: { chatIdentity: plan.identity } });
+            if (!result.localMirror)
+                this.mutable.status += ` 原聊天断点已保存，${PROGRESS_MIRROR_SKIPPED}`;
+            this.log.info('auto.committed', { data: { chatAlias: this.host.chatAlias(plan.identity.stableId), messageIndex, localMirror: result.localMirror, ...plan.stats }, sensitive: { chatIdentity: plan.identity } });
         }
         catch (error) {
+            if (error?.code === 'CLEANER_GENERATION_ACTIVE') {
+                logCleanerFailure(this.log, 'auto.cancelled', 'cleaner.auto', error);
+                this.mutable.status = '自动清洗已跳过：宿主正在生成或已开启新一轮生成，清洗进度未变。';
+                return;
+            }
             logCleanerFailure(this.log, 'auto.failed', 'cleaner.auto', error);
             this.mutable.error = errorMessage(error);
             this.mutable.status = `自动清洗失败：${errorMessage(error)}`;

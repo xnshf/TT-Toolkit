@@ -38,6 +38,7 @@ describe('model settings failure instrumentation', () => {
         const logger = mockLogger();
         const runtime = new ModelSettingsRuntime(host, logger, { fetch, capabilities, probeCapability });
         const decision = preset({ protocol: 'systemone' });
+        await runtime.load();
         await runtime.save({ schemaVersion: 1, activePresetId: 'p1', presets: [decision] });
         expect(await runtime.fetchModels(decision)).toEqual(['jev']);
         expect(await runtime.testConnection(decision)).toEqual({ modelCount: 1 });
@@ -81,22 +82,44 @@ describe('model settings failure instrumentation', () => {
         expect(logger.scopedLog.fail).toHaveBeenCalledWith('presets.load_failed', 'presets.load', expect.any(Error), { includeError: false });
     });
 
+    it('blocks saves and resets after a read failure until a retry succeeds', async () => {
+        const { host, runtime } = makeRuntime();
+        const saved = { schemaVersion: 1, activePresetId: 'p1', presets: [preset({ protocol: 'systemone' })] };
+        host.globalGet.mockRejectedValueOnce(new Error('storage down')).mockResolvedValue(saved);
+        const defaults = createDefaultLlmPresetSettings();
+        await expect(runtime.save(defaults)).rejects.toHaveProperty('code', 'PRESET_WRITE_BLOCKED');
+        await runtime.load();
+        await expect(runtime.save(defaults)).rejects.toHaveProperty('code', 'PRESET_WRITE_BLOCKED');
+        await expect(runtime.reset()).rejects.toHaveProperty('code', 'PRESET_WRITE_BLOCKED');
+        expect(host.globalSet).not.toHaveBeenCalled();
+        await runtime.load();
+        expect(runtime.state.settings).toEqual(saved);
+        await runtime.save(saved);
+        expect(host.globalSet).toHaveBeenCalledExactlyOnceWith('llm-presets-v1', saved);
+    });
+
     it('logs exactly one presets.save_failed event without sensitive payload', async () => {
         const { host, logger, runtime } = makeRuntime();
+        await runtime.load();
         host.globalSet.mockRejectedValueOnce(new Error('save down'));
         await expect(runtime.save({ ...createDefaultLlmPresetSettings(), presets: [preset()] })).rejects.toThrow(/save down/);
         expect(logger.scopedLog.fail).toHaveBeenCalledTimes(1);
         expect(logger.scopedLog.fail).toHaveBeenCalledWith('presets.save_failed', 'presets.save', expect.any(Error), { includeError: false });
     });
 
-    it('registers loaded and normalized saved preset values for protection', async () => {
+    it('registers loaded and normalized preset values for protection before writing', async () => {
         const { host, logger, runtime } = makeRuntime();
         const settings = { schemaVersion: 1, activePresetId: 'p1', presets: [preset()] };
         host.globalGet.mockResolvedValue(settings);
         await runtime.load();
         expect(logger.protectValues).toHaveBeenCalledWith(expect.objectContaining({ presets: [expect.objectContaining({ apiKey: 'sk-top-secret' })] }));
-        host.globalSet.mockResolvedValue(undefined);
-        await runtime.save(settings);
+        const changed = { ...settings, presets: [preset({ name: '  Renamed  ', apiKey: 'sk-test-next-save' })] };
+        host.globalSet.mockImplementation(async () => {
+            expect(logger.protectValues).toHaveBeenLastCalledWith(expect.objectContaining({
+                presets: [expect.objectContaining({ name: 'Renamed', apiKey: 'sk-test-next-save' })],
+            }));
+        });
+        await runtime.save(changed);
         expect(logger.protectValues).toHaveBeenCalledTimes(2);
     });
 
@@ -110,11 +133,12 @@ describe('model settings failure instrumentation', () => {
         const probeCapability = vi.fn(async () => ({ format: 'plain', checkedAt: Date.now() }));
         const runtime = new ModelSettingsRuntime(host, logger, { capabilities, probeCapability });
         const settings = { schemaVersion: 1, activePresetId: 'p1', presets: [preset(), preset({ id: 'p2', model: 'model-b' })] };
+        await runtime.load();
         await runtime.save(settings);
-        await vi.waitFor(() => expect(probeCapability).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(logger.scopedLog.info).toHaveBeenCalledWith('capability.probed', expect.objectContaining({ data: { presetId: 'p2', format: 'plain' } })));
+        expect(probeCapability).toHaveBeenCalledTimes(1);
         expect(probeCapability.mock.calls[0][1].id).toBe('p2');
         expect(capabilities.record).toHaveBeenCalledWith('p2', 'plain');
-        expect(logger.scopedLog.info).toHaveBeenCalledWith('capability.probed', expect.objectContaining({ data: { presetId: 'p2', format: 'plain' } }));
     });
 
     it('keeps probing failures silent without touching the save result or logging sensitive details', async () => {
@@ -125,6 +149,7 @@ describe('model settings failure instrumentation', () => {
             capabilities: { formatFor: vi.fn(async () => null), record: vi.fn() },
             probeCapability,
         });
+        await runtime.load();
         await runtime.save({ schemaVersion: 1, activePresetId: 'p1', presets: [preset()] });
         await vi.waitFor(() => expect(logger.scopedLog.warn).toHaveBeenCalledWith('capability.probe_failed', expect.objectContaining({ data: { presetId: 'p1', kind: 'Error' } })));
         expect(logger.scopedLog.warn.mock.calls[0][1].data).not.toHaveProperty('error');
@@ -134,7 +159,7 @@ describe('model settings failure instrumentation', () => {
         const json = new Map();
         const blobs = new Map();
         const host = new TauriTavernHost();
-        host.abi = { api: { dev: { frontendLogs: { list: vi.fn(async () => []), subscribe: vi.fn(async () => vi.fn()), getConsoleCaptureEnabled: vi.fn(async () => false) } } } };
+        host.abi = { api: { dev: { frontendLogs: { list: vi.fn(async () => []), subscribe: vi.fn(async () => vi.fn()) } } } };
         host.globalGet = vi.fn(async key => key === 'llm-presets-v1' ? { schemaVersion: 1, activePresetId: 'p1', presets: [preset()] } : json.get(`global:${key}`));
         host.globalSet = vi.fn(async (key, value) => { json.set(`global:${key}`, structuredClone(value)); });
         host.globalDelete = vi.fn(async key => { json.delete(`global:${key}`); });
@@ -154,18 +179,25 @@ describe('model settings failure instrumentation', () => {
                 if (key.startsWith('logs:'))
                     json.delete(key);
         });
+        json.set('global:logger-settings-v1', { ...createDefaultLogSettings(), privacyMode: 'full', consoleLevel: 'off' });
         const logger = new ToolkitLogger(host);
         await logger.initialize();
         await logger.start();
-        const fetchModels = vi.fn(async () => { throw new Error(`连接 ${preset().apiUrl} 失败，密钥 ${preset().apiKey} 被拒`); });
+        const diagnostic = logger.scoped({ featureId: 'system', source: 'test' });
+        const fetchModels = vi.fn(async (_host, draft) => {
+            diagnostic.info('request.simulated', { sensitive: { detail: `Bearer ${draft.apiKey}` } });
+            throw new Error(`连接 ${draft.apiUrl} 失败，密钥 ${draft.apiKey} 被拒`);
+        });
         const runtime = new ModelSettingsRuntime(host, logger, { fetchModels });
-        await expect(runtime.fetchModels(preset())).rejects.toThrow(/连接/);
-        await expect(runtime.testConnection(preset())).rejects.toThrow(/连接/);
+        await expect(runtime.fetchModels(preset({ apiKey: 'sk-test-unsaved-fetch' }))).rejects.toThrow(/连接/);
+        await expect(runtime.testConnection(preset({ apiKey: 'sk-test-unsaved-test' }))).rejects.toThrow(/连接/);
         await logger.stop();
         const sessionId = logger.state.sessions[0].id;
-        const loaded = await logger.loadSession(sessionId);
+        const { events: loaded } = await logger.loadSession(sessionId);
         const serialized = JSON.stringify(loaded);
-        expect(serialized).not.toContain('sk-top-secret');
+        expect(serialized).not.toMatch(/sk-top-secret|sk-test-unsaved/);
+        expect(loaded.filter(event => event.event === 'request.simulated').map(event => event.sensitive.detail))
+            .toEqual(['Bearer [REDACTED_PROTECTED_VALUE]', 'Bearer [REDACTED_PROTECTED_VALUE]']);
         expect(serialized).not.toContain('api.example.invalid');
         expect(serialized).not.toContain('model-a');
         const failureEvents = loaded.filter(event => /fetch_failed|test_failed/.test(event.event));
