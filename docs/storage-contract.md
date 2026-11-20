@@ -7,7 +7,7 @@
 - 扩展级 namespace 固定为 `tt-toolkit`，不得按功能、角色、聊天或用户另建 namespace。
 - 小型全局配置、布局和索引使用 extension store JSON；日志正文等较大的顺序数据使用 Blob。
 - 当前聊天的 canonical `chat[]` 是消息事实源。不得在 extension store 建立长期聊天副本，也不得把日志、备份或大索引写入消息和聊天 metadata。
-- 只有确实属于某一聊天且需要随聊天迁移的小型状态才可使用聊天 metadata extension。写入前必须验证 stable ID。
+- 只有确实属于某一聊天且需要随聊天迁移的小型状态才可使用聊天 metadata extension。写入前必须验证具体聊天 ref 与 stable ID；写入成功后不能确认原活对象仍属该聊天时不镜像，保留原文件的提交结果，不修改其它聊天。
 - 世界书决策配置优先写入世界书的 `extensions["tt-toolkit"]` 并后端往返验证；已有 extension-store 回退在嵌入验证成功且清理完成前仍为权威。只存配置，不存世界书或聊天备份。
 - 模型服务预设允许保存用户明确填写的 API URL、模型名和访问密钥。访问密钥不得进入日志、错误详情、导出文件、聊天、世界书或聊天 metadata。
 
@@ -72,7 +72,7 @@ TT-Toolkit 进一步规定：
 
 入口切换保存失败保留原入口与原内存设置；主题保存失败回退原主题。工作台拖动、边角缩放、尺寸/手机模式切换与布局重置保存失败时保留运行期布局，显示持续警告及重试按钮，记录 `LAYOUT_SETTINGS_SAVE_FAILED` 白名单 warn，不宣称已记忆成功。重置布局不改变入口方式与主题；损坏数据的开发重置见 `docs/toolkit-settings.md`。
 
-`chat-cleaner-settings-v1` 保持 `schemaVersion: 1`，新增 `clearSwipes` 布尔字段，默认 `false`。解析器仅对已知旧 v1 缺少此字段显式补齐默认值；字段已存在但非法、其它缺失字段或未知字段仍拒绝并提供清洗设置重置。配置写入保持原 key，不新增 table。聊天清洗进度存放在 metadata extension namespace `tt-toolkit.chat-cleaner`，schemaVersion 2；局部未完成字段的楼层不推进为已完成，断点可在后续自动清洗重试。候选读回和变更计划仅存在于运行期，候选清除只写当前 canonical chat[]，不建立聊天备份。
+`chat-cleaner-settings-v1` 保持 `schemaVersion: 1`，新增 `clearSwipes` 布尔字段，默认 `false`。解析器仅对已知旧 v1 缺少此字段显式补齐默认值；字段已存在但非法、其它缺失字段或未知字段仍拒绝并提供清洗设置重置。配置写入保持原 key，不新增 table。聊天清洗进度存放在 metadata extension namespace `tt-toolkit.chat-cleaner`，schemaVersion 2；局部未完成字段的楼层不推进为已完成，断点可在后续自动清洗重试。候选读回和变更计划仅存在于运行期，候选清除只写当前 canonical chat[]，不建立聊天备份。清洗正文、断点（含基线）及进度重置写入，仅在宿主未生成时发出；正文保存和进度写入不是原子操作，正文已保存但生成已开始时保留原进度。
 
 `world-info-editor-settings-v1` 保存 `{ schemaVersion: 1, convertUserMacro: boolean }`，默认 `convertUserMacro: true`。缺失 key 返回默认值；字段存在但非法、缺字段、未知字段或不支持的版本一律拒绝解析，界面回退默认值并提供“重置世界书管理设置”入口，不猜测覆盖。切换开关立即写入并生效，不新增 table。
 
@@ -118,9 +118,11 @@ TauriTavern 公开 chat handle 另提供按聊天寻址的 JSON 存储 `handle()
 - `tryGetJson()` 仅把 `{ found: false }` 解释为缺失。权限、非法组件、损坏 JSON 和其它异常必须继续抛出，不得降级为默认值。
 - `null` 是已存在的 JSON 值，不等同于缺失。
 - `setJson()` 是覆盖写入。写入前完成 schema 校验并传入克隆值，不能依赖宿主替调用方修正数据。
-- `deleteJson()`、`deleteBlob()` 和 `deleteTable()` 对不存在目标会报错。可选清理必须先确认存在，或只捕获经过确认的 not-found；不得吞掉其它错误。
+- `deleteJson()`、`deleteBlob()` 和 `deleteTable()` 对不存在目标会报错。显式清空 `tt-toolkit/logs` 只把宿主确认的该表缺失当作已空，随后仍写入空 `index-v2`；权限、传输、部分删除等失败不进入重建索引。其它可选清理必须先确认存在，或只捕获经过确认的 not-found。
 - Blob key 的扩展名参与 MIME 类型推断。日志分块固定使用 `.jsonl`。
 - 日志分块 sequence 在会话内单调递增，容量淘汰不得回退或复用编号；运行期计数器不进入 schema。重启关闭旧会话并创建新 ID，不恢复旧会话计数器。
+- 分块写入、淘汰或索引失败后暂停日志持久化；停用不再写入该次中断后的索引状态。已成功写入但尚未登记的分块只可用当前运行期索引访问，不假定重载后可找回。中断后保留有界内存尾部供当前页面运行期间查看与导出；重载或确认清空后不保留。清空只删除 `logs` table，删除成功但空索引写入失败时保持停用并提示检查存储后重载。不新增 schema、key 或 table。
+- 已索引的日志分块缺失、读失败或 JSONL / 事件范围不符合索引时，只将该分块标为不可读；继续读其它分块并保留内存尾部，不在读回时写索引、替换或删除 Blob。只有宿主明确的缺失结果记为缺失；导出按所选会话确认遗漏。不改变存储或导出 schema。
 - `index-v2` 中所有 Blob key 必须全局唯一。重复 key 报 `DUPLICATE_LOG_CHUNK`，停止日志记录并要求自行备份后显式清空，不自动去重或猜测恢复已覆盖内容；不改变 schema 版本、table 或 key。
 
 ## Schema 与迁移
@@ -134,7 +136,7 @@ TauriTavern 公开 chat handle 另提供按聊天寻址的 JSON 存储 `handle()
 ## 隐私、容量与清理
 
 - extension store 是持久化数据，不因界面关闭或功能停用自动消失。只保存恢复功能所必需的最少数据。
-- 日志只位于 `logs` table，并遵循 `docs/logging.md` 的脱敏和容量策略；清空日志只删除该 table。
+- 日志只位于 `logs` table，并遵循 `docs/logging.md` 的脱敏和容量策略；清空日志只删除该 table。模型密钥保护在新日志写入前生效，导出时再次处理副本，不回写历史分块、不增加密钥存储。
 - 功能重置默认只删除自己的固定 key 或 table，不得清空整个 `tt-toolkit` namespace。
 - 任何导出器必须显式选择允许导出的字段；模型访问密钥永不导出。日志文件、聊天文档和提示词 TXT 的统一宿主导出适配器只临时持有文本/Blob，不新增插件 table/key/schema 或聊天副本；临时原生 staging 的创建与清理由宿主导出函数负责。新增导出诊断沿用 logs 存储，只记录固定操作、阶段、原因、mode/outcome、数量及恢复动作，不持久化正文、文件名、路径、URI 或未知异常详情。
 - 日志与诊断不记录本机路径、用户名、原始聊天身份或可由业务标签反推出个人身份的信息。脱敏诊断允许固定相对源码位置、白名单字段路径、类型/约束、原因码和安全楼层索引，不允许未知异常详情或业务字段原值；消息降级诊断复用既有日志 schema/table/key，不另存聊天副本。

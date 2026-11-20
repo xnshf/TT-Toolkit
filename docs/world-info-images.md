@@ -35,7 +35,7 @@
 
 ## 已知限制
 
-- 只覆盖宿主 Chat Completions 的 `CHAT_COMPLETION_PROMPT_READY` 路径，不覆盖 Agent 组装。
+- 只覆盖宿主 Chat Completions 的 `CHAT_COMPLETION_PROMPT_READY` 路径，不覆盖 Agent 组装。通过宿主首位监听完成附图，提示词查看只读取当次组装已插入的图片，与两个功能的启用顺序无关。若宿主缺少首位监听接口，仅插入图片功能停止激活。
 - 不设单图体积硬上限，也不参与宿主文字预算裁切；压缩后仍超限时由模型方拒绝请求。压缩是入库时的有损处理，原图不保留，需要恢复请重新上传。
 - 不再接受 GIF 新导入（动画无法降采样，且宿主 `compressImage` 会把它转成静态 JPEG），已存在的 GIF 绑定仍可读取与发送。动图 WebP 同样会被压成首帧。
 - 压缩参数为内置常量，未暴露设置项；调整需改 `compress.js` 并对已绑定图片重新上传。

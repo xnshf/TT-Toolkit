@@ -35,7 +35,7 @@ TT-Toolkit 日志继续作为默认关闭、主要面向开发者和 Agent 的�
 - `getConsoleCaptureEnabled() -> Promise<boolean>`；
 - `setConsoleCaptureEnabled(enabled) -> Promise<void>`。
 
-TT-Toolkit 只允许调用前三个读取/订阅方法。虽然宿主公开了 setter，本功能也不得调用或在界面暴露它。
+TT-Toolkit 仅使用 `list` 和 `subscribe`。`getConsoleCaptureEnabled` 在 TauriTavern 2.4.0 的设置与运行时不一致时会改变宿主全局捕获，不能用于只读展示；本功能也不调用或暴露 setter。证据见 [宿主契约](./host-contract.md#日志与存储)。
 
 `FrontendLogEntry` 的已验证字段为：
 
@@ -80,10 +80,9 @@ target?: string
 host.assertFrontendLogsCapability()
 host.listFrontendLogs()
 host.subscribeFrontendLogs(onEntry, onContractError)
-host.getHostConsoleCaptureEnabled()
 ```
 
-`assertFrontendLogsCapability()` 必须确认 `list`、`subscribe` 和 `getConsoleCaptureEnabled` 都是函数。`listFrontendLogs()` 必须调用无参数 `list()`。`subscribeFrontendLogs()` 在调用消费方前完成 DTO 校验，并返回只执行一次底层取消的幂等函数。
+`assertFrontendLogsCapability()` 必须确认 `list` 和 `subscribe` 都是函数。`listFrontendLogs()` 必须调用无参数 `list()`。`subscribeFrontendLogs()` 在调用消费方前完成 DTO 校验，并返回只执行一次底层取消的幂等函数。
 
 已知字段的严格校验规则：
 
@@ -102,10 +101,9 @@ host.getHostConsoleCaptureEnabled()
 - `HOST_FRONTEND_LOGS_MISSING`：必需方法缺失；
 - `HOST_FRONTEND_LOG_LIST_INVALID`：尾部不是数组；
 - `HOST_FRONTEND_LOG_ENTRY_INVALID`：条目字段非法；
-- `HOST_FRONTEND_LOG_SUBSCRIPTION_INVALID`：取消函数非法；
-- `HOST_FRONTEND_LOG_STATUS_INVALID`：console capture 状态不是 boolean。
+- `HOST_FRONTEND_LOG_SUBSCRIPTION_INVALID`：取消函数非法。
 
-日志功能启用前检查 `list`、`subscribe` 和 `getConsoleCaptureEnabled`。初始化失败时不创建半有效会话；已经建立的订阅必须立即取消。
+日志功能启用前检查 `list` 和 `subscribe`。初始化失败时不创建半有效会话；已经建立的订阅必须立即取消。
 
 运行中的订阅若收到非法 DTO，应只停止宿主日志接入并把宿主流标记为降级，不能跳过非法记录后继续猜测。当前 Toolkit 日志会话继续记录自身事件。界面需要显示稳定、可操作的宿主日志契约错误。
 
@@ -128,7 +126,7 @@ _stopInternal()
 外部启动（用户手动开启或启动时恢复已启用状态）使用 `importHostTail: true`，严格按以下顺序执行：
 
 1. 验证日志设置和日志索引可用；
-2. 检查三个宿主日志方法并读取、校验 console capture 状态；
+2. 检查 `list` 和 `subscribe`；
 3. 建立宿主实时订阅，回调暂时只写入初始化 buffer；
 4. 无参数读取宿主当前保留的前端日志尾部；
 5. 构造新会话并临时加入 `index.sessions`；
@@ -162,8 +160,6 @@ hostFrontendStatus: {
   message: '',
   importedCount: 0,
 },
-hostConsoleCaptureEnabled: null,
-hostConsoleCaptureError: '',
 ```
 
 - `idle`：日志关闭，最近没有未解决的宿主契约错误；
@@ -254,7 +250,7 @@ Toolkit 自身结构化事件同步到 console 后可能被宿主重新捕获。
 - 模型设置：`model-settings / model-settings / presets.load_failed`、`presets.save_failed`、`models.fetch_failed`、`connection.test_failed`；
 - 功能加载：`system / feature-loader / feature.load_failed`；
 - 功能启停：`system / shell / feature.activation_failed`、`feature.deactivation_failed`；
-- logger 自身：`system / logger / host.stream_contract_failed`、`session.load_failed`、`settings.save_failed`、`logs.clear_failed`、`host.status_refresh_failed`；
+- logger 自身：`system / logger / host.stream_contract_failed`、`session.chunk_unreadable`、`settings.save_failed`、`logs.clear_failed`；
 - 查看器文件与剪贴板动作：`system / logger-ui / export.file_failed`、`export.copy_failed`、`export.serialize_failed`。
 
 UI 不自行拼装错误字段。runtime 或 logger 应提供统一的失败报告入口，例如 `reportOperationFailure(operation, error)`；页面只传稳定 operation 与原始错误。文件选择器抛出的 `AbortError` 是用户取消，不记录为失败。
@@ -311,7 +307,7 @@ logger.protectValues(values)
 - 脱敏会话展开宿主事件时显示“消息因隐私模式未保存”；
 - 完整会话展开时显示 `message` 和可选 `target`；
 - JSON/LOG 导出继续严格使用当前筛选结果；
-- 宿主 console 捕获状态只展示，不提供开关。
+- 宿主 console 捕获请在宿主设置中查看，不在日志页读取或修改。
 
 宿主状态显示规则：
 
@@ -319,7 +315,6 @@ logger.protectValues(values)
 - `degraded`：当前会话仍记录 Toolkit 事件，但宿主副本已停止；
 - `persistenceError`：明确说明当前日志无法可靠写入 extension store；
 - legacy 或损坏 schema：继续要求清空日志，不得与宿主流错误合并；
-- console 状态读取失败：显示“未知”和独立错误，不改变宿主设置；
 - 只有在以上错误都不存在且筛选结果确实为空时，才显示“没有匹配的日志”。
 
 脱敏会话展开 `system / host-frontend` 条目时必须显示“消息因隐私模式未保存”，而不是仅展示一个缺少 `sensitive` 的 JSON。完整会话展示经过受保护值替换后的 `message` 和可选 `target`。
